@@ -1,0 +1,73 @@
+---
+title: "Power simulations"
+author: "AAZaidi"
+date: "2022-08-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(data.table)
+library(ggplot2)
+F = rprojroot::is_rstudio_project$make_fix_file()
+
+```
+
+```{r}
+
+dat = fread(F("data/mtgwas/mitonuc.incomp/pwrsim_incompatibility_binary.txt"))
+colnames(dat) = c("phecode", "OR", "power")
+
+glm.results = fread(F("data/mtgwas/mitonuc.incomp/pmbb_binary_phewas_mitonuc_08112022.txt"))
+glm.results = glm.results[, .(ncases = mean(ncases), ncontrols = mean(ncontrols)), by = "phecode"]
+
+dat = merge(dat, glm.results, by = "phecode")
+dat[, p := ncases/(ncases + ncontrols)]
+dat[, se := (ncases + ncontrols)*p*(1-p)]
+plt_bin = ggplot(dat, aes(OR, power, group = phecode, color = se))+
+  geom_line(alpha = 0.6)+
+  theme_classic()+
+  labs(x = "Effect size (OR)", 
+       y = "Power\n (binary traits)",
+       color = bquote(N[eff]))+
+    scale_color_gradient(low = "yellow", high = "red")
+
+plt_bin
+
+```
+
+
+```{r}
+
+dat2 = fread(F("data/mtgwas/mitonuc.incomp/pwrsim_incompatibility_labs.txt"))
+mdat = melt(dat2, id.vars = "effect")
+lm.results = fread(F("data/mtgwas/mitonuc.incomp/pmbb_labs_phewas_mitonuc_bxcx_08142022.txt"))
+lm.results = lm.results[, .(nsamples = mean(nsamples)), by = "phenotype"]
+mdat = merge(mdat, lm.results, by.x = "variable", by.y = "phenotype")
+
+plt_quant = ggplot(mdat, aes(effect, value, group = variable, color = nsamples))+
+  geom_line(alpha = 0.6)+
+  theme_classic()+
+    labs(x = "Effect size (SD of trait)", 
+       y = "Power\n (quant traits)",
+       color = "N")+
+    scale_color_gradient(low = "yellow", high = "red")
+
+plt_quant
+
+```
+
+```{r}
+
+library(patchwork)
+
+plt_combined = plt_bin / plt_quant
+
+ggsave(F("output/plots/plt_mitonuc.incom.pwr_08302022.png"), 
+       height = 5, width = 4)
+
+```
+

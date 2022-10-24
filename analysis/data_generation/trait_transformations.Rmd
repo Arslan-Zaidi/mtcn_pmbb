@@ -1,0 +1,197 @@
+---
+title: "Transformation of quantitativ traits"
+author: "AAZaidi"
+date: "2022-08-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(MASS)
+F = rprojroot::is_rstudio_project$make_fix_file()
+```
+
+
+Determining the right transformation to use for each lab. First, load in the lab data and look at their distributions.
+
+
+```{r}
+
+quants = fread(F("data/phenotype/PMBB_2.2_quant_08112022.pheno"))
+
+#remove rlrmtCN (we know it's normal)
+quants = quants[variable !="rlrmtCN"]
+
+quants[, scaled_value := scale(value), by = "variable"]
+
+ggplot(quants, aes(scaled_value))+
+  geom_density()+
+  facet_wrap(~variable, scales = "free")+
+  theme_classic()+
+  labs(x = "Phenotype (SD units)")
+
+```
+
+Some of the distributions (e.g. serum creatinine and CRP) are extremely skewed while others are not. There are also some really short people here.
+
+```{r}
+
+quants[variable == "Height" & scaled_value < -5]
+
+
+```
+
+These are clearly wrong. Let's remove these.
+
+```{r}
+
+quants[variable == "Height" & scaled_value < -5, value := NA]
+quants[variable == "Height" & scaled_value < -5, scaled_value := NA]
+
+#also remove negative values
+quants[value < 0, value := NA]
+quants[value < 0, scaled_value := NA]
+
+#also remove values that are crazy high (e.g. > 7 SD)
+quants = quants[scaled_value < 7 & scaled_value > -7]
+
+quants = na.omit(quants)
+
+ggplot(quants, aes(scaled_value))+
+  geom_density()+
+  facet_wrap(~variable, scales = "free")+
+  theme_classic()+
+  labs(x = "Phenotype (SD units)")
+
+```
+
+Let's try a log transformation to all traits.
+
+```{r}
+
+ggplot(quants[variable != "rlrmtCN"], aes(log(value+1)))+
+  geom_density()+
+  facet_wrap(~variable, scales = "free")+
+  theme_classic()+
+  labs(x = "Phenotype (Log transformed)")
+
+```
+
+Most of these look a lot better. Let's try the Box-Cox transformation. 
+
+```{r}
+
+mtcn = fread(F("data/phenotype/PMBB_plink4mat_combined.blood_residuals_07272022.pheno"))
+pcs.eur = fread(F("data/gcta/EUR/PMBB-Release-2020-2.0_genetic_genotype.EUR.maf0.01.pca.header.eigenvec"))
+demog = fread(F("data/phenotype/PMBB-Release-2020-2.2_phenotype_covariates.txt"), header = TRUE)
+
+demog[is.na(Age_at_Enrollment) == FALSE, `:=`(Age, Age_at_Enrollment)]
+demog[is.na(Age_at_Enrollment) == TRUE, `:=`(Age, Age_first_sample)]
+demog = demog[Age > 0]
+
+covar = demog[, .(PMBB_ID, Sex, Age)]
+mtcn.eur = merge(mtcn, pcs.eur, by = c("FID", "IID"))
+mtcn.eur = merge(mtcn.eur, covar, by.x = "IID", by.y = "PMBB_ID")
+
+phenotypes = unique(quants$variable)
+phenotypes = setdiff(phenotypes, "rlrmtCN")
+
+quants.eur = merge(quants, mtcn.eur, by.x = "PMBB_ID", by.y = "IID")
+pc.form = paste(paste("PC", seq(1,20,1), sep = ""), collapse = "+")
+
+trans.labs = list()
+lambdas = list()
+for(i in 1:length(phenotypes)){
+  x = phenotypes[i]
+  dat = quants.eur[variable == x]
+  dat[, y := value]
+  if(min(dat$value) == 0){
+    dat[, y := value + 1 ]
+  }
+  form = paste("y ~ Sex + poly(Age, 2, raw = TRUE)+", pc.form, sep = "")
+  bt = boxcox(lm(data = dat, form), plotit = FALSE)
+  lambda = bt$x[which.max(bt$y)]
+  lambdas[[i]] = data.table(lambda = lambda)
+  if(lambda == 0){
+    dat[, tvalue := log(y)]
+  }else{
+    dat[, tvalue := (y^lambda - 1)/lambda]
+  }
+  trans.labs[[i]] = dat
+}
+
+names(trans.labs) = names(lambdas) = phenotypes
+trans.labs = dplyr::bind_rows(trans.labs, .id = "Phenotype")
+
+```
+
+Plot the distributions
+
+```{r}
+
+ggplot(trans.labs, aes(tvalue))+
+  geom_density()+
+  theme_classic()+
+  labs(x = "Phenotype (transformed)")+
+  facet_wrap(~Phenotype, scales = "free")
+
+```
+
+these look better though some don't look like they will improve with a transformation. Output these to file. Print the lambdas so we can back-transform later. 
+
+
+```{r}
+
+#transform all traits (in both EUR and AFR) and save
+
+trans.labs = list()
+for(i in 1:length(phenotypes)){
+  x = phenotypes[i]
+  dat = quants[variable == x]
+  dat[, y := value]
+  if(min(dat$value) == 0){
+    dat[, y := value + 1 ]
+  }
+  lambda = lambdas[[i]]
+  if(lambda == 0){
+    dat[, tvalue := log(y)]
+  }else{
+    dat[, tvalue := (y^lambda - 1)/lambda]
+  }
+  trans.labs[[i]] = dat
+}
+
+names(trans.labs) = phenotypes
+trans.labs = dplyr::bind_rows(trans.labs, .id = "Phenotype")
+
+ggplot(trans.labs, aes(tvalue))+
+  geom_density()+
+  theme_classic()+
+  labs(x = "Phenotype (transformed)")+
+  facet_wrap(~Phenotype, scales = "free")
+
+
+fwrite(trans.labs[, .(PMBB_ID, Phenotype, tvalue)],
+       F("data/phenotype/PMBB_2.2_quant_08122022.boxcox.pheno"), sep = "\t")
+
+```
+
+
+```{r}
+
+lambdas = dplyr::bind_rows(lambdas, .id = "Lab")
+
+fwrite(lambdas, F("output/tables/boxcox_lambdas_08302022.txt"), sep = "\t")
+
+```
+
+
+
+
+

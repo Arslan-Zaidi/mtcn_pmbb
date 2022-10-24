@@ -1,0 +1,281 @@
+---
+title: "Admixture mapping"
+author: "Arslan A. Zaidi"
+date: '2022-09-06'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+
+library(data.table)
+library(ggplot2)
+
+F =rprojroot::is_rstudio_project$make_fix_file()
+
+```
+Load the admixture mapping results:
+
+Model 1: rlrmtcn ~ local ancestry + global ancestry
+Model 2: rlrmtcn ~ local ancestry + global ancestry + Duffy null genotype
+
+```{r}
+
+dat1 = fread(F("data/rfmix/admixmap/pmbb.afr.all.mtcn.admixmap.txt"))
+dat2 = fread(F("data/rfmix/admixmap/pmbb.afr.all.mtcn.admixmap.rs2814778.txt"))
+colnames(dat1) = colnames(dat2) = c("chrom","bp","cm","beta","se","tstat","pvalue")
+
+```
+
+Generate manhattan plots for both models. 
+
+```{r}
+plt1 = ggplot(dat1, aes(bp, -log10(pvalue)))+
+  geom_point(size = 0.6, alpha = 0.5, color = "grey")+
+  facet_grid(.~chrom, scales = "free_x", space = "free_x")+
+  theme_classic()+
+  theme(axis.text.x = element_blank(),
+        panel.spacing = unit(0.1, "cm"))+
+  labs(x = "Position along the genome",
+       y = bquote(-Log[10]~"Pvalue"),
+       title = "Admixture mapping (without rs2814778)")
+
+plt2 = ggplot(dat2, aes(bp, -log10(pvalue)))+
+  geom_point(size = 0.6, alpha = 0.5, color = "grey")+
+  facet_grid(.~chrom, scales = "free_x", space = "free_x")+
+  theme_classic()+
+  theme(axis.text.x = element_blank(),
+        panel.spacing = unit(0.1, "cm"))+
+  labs(x = "Position along the genome",
+       y = bquote(-Log[10]~"Pvalue"),
+       title = "Admixture mapping (with rs2814778)")
+```
+
+```{r}
+
+ggsave(F("output/plots/plt_admixmap_nodarc_09092022.png"),
+       plt1, height = 4, width = 8)
+ggsave(F("output/plots/plt_admixmap_darc_09092022.png"),
+       plt2, height = 4, width = 12)
+
+
+```
+
+
+Get independent peaks for the second model by clumping (+/- 1Mb)
+
+```{r}
+
+dat2.sig = dat2[-log10(pvalue)>2]
+dat2.sig = unique(dat2.sig, by = c("chrom","beta","pvalue"))
+dat2.sig$lag = c(0, diff(dat2.sig$bp))
+
+dat2.sig[1, window := 1]
+for(i in 2:nrow(dat2.sig)){
+  if(
+    (dat2.sig[i, chrom] == dat2.sig[i-1, chrom]) & 
+    (dat2.sig[i, lag] < 1e6)
+  ){
+    dat2.sig[i, window := dat2.sig[i-1, window]]
+  }else{
+    dat2.sig[i, window := dat2.sig[i-1, window + 1]]
+  }
+}
+
+dat.sig2 = dat2.sig[, .SD[pvalue == min(pvalue)], by = c("window")]
+
+```
+
+Write to file. The genotypes at these variants will be used as fixed effects in the GCTA model to see if they bring the h2 down in the AFR cohort. 
+
+```{r}
+
+fwrite(dat2.sig[, .(chrom, bp, beta, se, tstat, pvalue)], F("data/rfmix/admixmap/pmbb.afr.admixmap.pruned.hits.txt"),
+       sep = "\t")
+
+```
+
+Spoiler alert: They do. The h2 comes down from 30\% to 14\% (within range of the EUR cohort). 
+
+What are these variants and what are their frequencies in the two cohorts. 
+
+```{r}
+
+f.afr = fread(F("data/rfmix/admixmap/pmbb.afr.admixmap.pruned.hits.freq.afreq"))
+
+f.eur = fread(F("data/rfmix/admixmap/pmbb.eur.admixmap.pruned.hits.freq.afreq"))
+
+colnames(f.eur) = colnames(f.afr) =c("chrom","rsid","a2","a1","a1freq","ct")
+
+f.merged = merge(f.afr[, .(chrom,rsid, a1, a2, a1freq)], 
+                 f.eur[,.(chrom,rsid, a1, a2, a1freq)], 
+                 by = c("chrom","rsid","a1","a2"))
+
+colnames(f.merged)[c(5,6)] = c("a1freq.afr","a1freq.eur")
+f.merged[, f.delta := abs(a1freq.afr - a1freq.eur)]
+
+```
+
+
+```{r}
+
+fwrite(f.merged, 
+       F("output/tables/supptable_admixmap_fdelta.txt"),
+       sep = "\t")
+
+```
+
+
+
+do they overlap with the imputed GWAS results?
+
+```{r}
+
+read.gwas = function(path){
+  
+  dat = fread(F(path))
+  colnames(dat) = c("CHROM","BP","SNP","REF","ALT","A1","TEST","CT","BETA","SE","TSTAT","P","ERR")
+  dat$TEST=NULL
+  dat = dat[ERR==".",]
+  dat$ERR = NULL
+  dat[, sig := -log10(P)]
+  dat$CHROM = factor(dat$CHROM, levels = seq(1,22))
+
+  # dat = dat[SNP %in% info$SNP]
+  
+  return(dat)
+}
+
+afr.bl = read.gwas("data/mtgwas/mtCN/imputed/AFR/residuals/pmbb_mtgwas_logmtcn.filtered.residuals.AFR.chrall.rlrmtcn.glm.linear.gz")
+
+
+```
+
+
+
+
+```{r}
+
+afr.bl.peaks = list()
+for(i in 1:nrow(dat2.sig)){
+  chrom = dat2.sig$chrom[i]
+  wstart = dat2.sig$bp[i] - 1e6
+  wend = dat2.sig$bp[i] + 1e6
+  afr.bl.peaks[[i]] = afr.bl[CHROM == chrom & BP > wstart & BP < wend]
+}
+
+afr.bl.peaks = dplyr::bind_rows(afr.bl.peaks, .id = "window")
+
+```
+
+Plot the peaks within each window
+
+```{r}
+
+afr.bl.peaks$CHROM = factor(afr.bl.peaks$CHROM, levels = c(1:22))
+afr.bl.peaks$window = factor(afr.bl.peaks$window, levels = c(1:21))
+
+labels.df = unique(afr.bl.peaks[, .(CHROM, window)], by = c("CHROM","window"))
+labels.df[,reorder.window := seq_along(window), by = "CHROM"]
+labels.df$window1 = paste(labels.df$CHROM, labels.df$reorder.window, sep= "_")
+
+afr.bl.peaks = merge(afr.bl.peaks, labels.df, by = c("CHROM","window"))
+plt_imputed = ggplot(afr.bl.peaks, aes(BP, sig))+
+  geom_point(size = 0.6, alpha = 0.6, color = "grey")+
+  facet_wrap(~ window1, scales = "free_x", 
+             nrow = 3, ncol = 7)+
+  theme_classic()+
+  theme(axis.text.x = element_blank())
+
+plt_imputed
+
+```
+
+```{r}
+
+dat2.reduced = dat2[CHROM %in% afr.bl.peaks$CHROM]
+plt_imputed2 = ggplot() +
+  geom_line(data = dat2.reduced, aes(bp, -log10(pvalue)))+
+  labs(x = "Chromosomal position", y = bquote("-Log"[10]~"P-value"))
+  
+ggsave(F("output/plots/plt_admixmap_darc_overlaid_10142022.png"),
+       plt_imputed2, height = 4, width = 12)
+
+```
+
+```{r}
+
+chroms = unique(dat2.reduced$CHROM)
+afr.bl2 = afr.bl[CHROM %in% chroms,]
+ymax = max(afr.bl2$sig)
+for(i in 1:length(chroms)){
+  chrom=chroms[i]
+  plt = ggplot()+
+    geom_point(data = afr.bl[CHROM == chrom], 
+               aes(BP, -log10(P)),
+               color = "grey", alpha = 0.5, size = 1)+
+    geom_line(data = dat2.reduced[CHROM == chrom],
+              aes(bp, -log10(pvalue)),
+              color = "blue",
+              size = 1.1)+
+    theme_classic()+
+    theme(axis.title = element_blank(), 
+          axis.text.x = element_blank(),
+          axis.text.y = element_text(size = 22),
+          strip.text = element_text(size = 22))+
+    facet_wrap(~CHROM)+
+    ylim(c(0, 6.7))+
+    labs(x = "Position", y = bquote("-Log"[10]~"P-value"))
+  
+  ggsave(F(paste("output/plots/admixmap/plt_admixture_overlaid", chrom, ".png", sep = "")),
+         plt,
+         height = 3, width = 4)
+  print(i)
+}
+
+```
+
+
+
+```{r}
+
+ggsave(F("output/plots/plt_postadmixmap_imputed.pdf"), plt_imputed, height = 7, width = 7)
+
+```
+
+Select the topmost significant hit in each peak. 
+
+```{r}
+
+afr.bl.peaks2 = afr.bl.peaks[, .SD[which.min(P)], by = "window"]
+
+afr.bl.peaks2
+
+```
+
+What is the frequency of these variants in the AFR vs EUR?
+
+```{r}
+
+f.afr = fread(F("data/rfmix/admixmap/pmbb.afr.admixmap.pruned.hits.freq.afreq"))
+f.eur = fread(F("data/rfmix/admixmap/pmbb.eur.admixmap.pruned.hits.freq.afreq"))
+
+colnames(f.afr)[1] = colnames(f.eur)[1] = "CHROM"
+
+f.merged = merge(f.afr, f.eur, by = c("CHROM","ID","REF","ALT"), 
+                 suffixes = c("_afr","_eur"))
+
+
+ggplot(f.merged, aes(ALT_FREQS_afr, ALT_FREQS_eur, label = CHROM))+
+  geom_text()+
+  theme_classic()+
+  labs(x = "Frequency (AFR)",
+       y = "Frequency (EUR)")
+
+
+```
+

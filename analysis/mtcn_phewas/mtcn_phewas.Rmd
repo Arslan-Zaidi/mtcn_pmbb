@@ -1,0 +1,312 @@
+---
+title: "mtCN PheWAS"
+author: "AAZaidi"
+date: "4/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Introduction 
+
+Here, we analyze the PheWAS results of an association between mtDNA copy number and phenotypes in the PMBB cohort.
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(PheWAS)
+F = rprojroot::is_rstudio_project$make_fix_file()
+```
+
+
+#### Model
+
+Let's load the association statistics for both quantitative and binary phenotypes. The model is as follows:
+
+Phenotype ~ Sex + poly(age, raw = TRUE) + rlrmtCN + 20PCs
+
+Where Phenotype is either case/control status (in which case the model is logistic regression) or quantitative lab trait (centered and scaled to unit variance after removing values >10SD away from the mean), and rlrmtCN are the residuals from the following model:
+
+rmtCN ~ (Sex + poly(age, 2, raw = TRUE))*(poly(neutrophils, 2, raw = TRUE) + poly(platelets, 2, raw = TRUE) + ...) where ... are quadratic terms for the remaining blood counts.
+
+#### Results
+
+```{r}
+
+lm.afr = fread(F("data/mtgwas/mtcn.phewas/pmbb_mtcn.phewas_quant.bxcx.afr.10212022.linear"))
+lm.eur = fread(F("data/mtgwas/mtcn.phewas/pmbb_mtcn.phewas_quant.bxcx.eur.10212022.linear"))
+
+glm.afr = fread(F("data/mtgwas/mtcn.phewas/pmbb_mtcn.phewas_phecodes.afr.10212022.glm.logistic"))
+glm.eur = fread(F("data/mtgwas/mtcn.phewas/pmbb_mtcn.phewas_phecodes.eur.10212022.glm.logistic"))
+
+colnames(lm.afr)[c(1,5)] = colnames(lm.eur)[c(1,5)] = colnames(glm.afr)[c(1,5)] = colnames(glm.eur)[c(1,5)] = c("Phenotype","P")
+
+lm.results = rbind(lm.afr, lm.eur)
+glm.results = rbind(glm.afr, glm.eur)
+glm.results$Phenotype = as.character(glm.results$Phenotype)
+glm.results = addPhecodeInfo(glm.results)
+
+colnames(lm.results)[6] = "ncases"
+lm.results$ncontrols = "0"
+
+glm.results = glm.results[Variable == "rlrmtcn" & ncases > 20,]
+lm.results = lm.results[Variable == "rlrmtcn", c(1:6,9,7,8)]
+
+```
+
+Add descriptors to the labs.
+
+```{r}
+
+labs.descriptions = data.table(Phenotype = c("A1C","ALB","Alkphos","ALT","AST","Bili_Direct","Bili_Indirect","Bili_Total","CK","CRP","Chol_HDL","Chol_LDL","Chol_Total","Creatinine","ESR","GGT","Glucose","Glucose_fasting","INR","PTT","triglycerides","urobili","SSYSTOLIC","DIASTOLIC","Height","BMI"),
+                               description = c("Hemoglobin A1C ", "Albumin levels", "Alkaline Phosphatase", "Alaninie Aminotranferase", "Aspartate Aminotransferase", "Bilirubin (Direct)", "Bilirubin (Indirect)",  "Total Bilirubin", "Creatine Kinase", "C-Reactive Protein High Sensitivity", "High Density Lipoprotein Cholestrol", "Low Density Lipoprotein Cholesterol", "Total Cholesterol", "Serum Creatinine", "Erythrocyte Sedimentation Rate","Gamma Glutamyl Transferase", "Glucose", "Fasting Glucose", "International Normalization Ratio", "Partial Thromboplastin Time", "Triglycerides", "Urine Urobilinogen","Systolic BP","Diastolic BP","Height","Body mass index"))
+
+lm.results = merge(lm.results, labs.descriptions, by = "Phenotype")
+lm.results$group = "Labs"
+
+```
+
+
+Calculate the false discovery rate and plot.
+
+```{r}
+
+all.phenotypes = rbind(lm.results, glm.results)
+
+all.phenotypes[, p.adjusted := p.adjust(P, method = "BH")]
+all.phenotypes[, sig := "NS"]
+all.phenotypes[p.adjusted < 0.05, sig := "S1"]
+all.phenotypes[p.adjusted < 0.005, sig := "S2"]
+
+
+all.phenotypes[Z > 0, sign := "+"]
+all.phenotypes[Z < 0, sign := "-"]
+all.phenotypes$sign = factor(all.phenotypes$sign, levels = c("+","-"))
+
+all.phenotypes$group = stringr::str_to_sentence(all.phenotypes$group)
+
+plt_manhattan = ggplot(all.phenotypes, 
+                       aes(Phenotype, -log10(P), fill = sig, color = sig, shape = sign))+
+  geom_point(size = 0.6)+
+  theme_classic()+
+  facet_grid(Pop~group, scales = "free_x")+
+  theme(axis.text.x = element_blank(), 
+        panel.spacing = unit(0.3, "lines"), 
+        strip.text.x = element_text(angle = 270),
+        axis.ticks.x = element_blank(),
+        strip.background=element_rect(fill=NA, size = 0.8),
+        panel.border = element_rect(size = 0.2, fill = NA, color = "grey", linetype = "dotted"))+
+  scale_fill_manual(values = c("#2b8cbe","#fec44f","#d95f02"),
+                     labels = c("FDR > 0.05", "FDR < 0.05","FDR < 0.005"))+
+  scale_color_manual(values = c("#2b8cbe","#fec44f","#d95f02"),
+                     labels = c("FDR > 0.05", "FDR < 0.05","FDR < 0.005"))+
+  scale_shape_manual(values = c(24,25),  labels = c("Up","Down"))+
+  guides(fill = "none")+
+  coord_cartesian(clip = 'off')+
+  labs(x = "Phenotypes", 
+       y = bquote("-Log"[10]~"P value"), 
+       color = "Sig.",
+       shape = bquote(beta[mtCN]~"direction"))
+
+
+plt_manhattan
+
+
+```
+
+Save plot to file
+
+```{r}
+
+ggsave(F("output/plots/plt_mtcn_phewas_raw_10212022.svg"), plt_manhattan, 
+       height = 4, width = 7)
+```
+
+Display association for traits with FDR < 0.005 separately for each trait group.
+
+```{r}
+
+cardio = all.phenotypes[sig == "S2" & group == "Circulatory system"]
+congenital = all.phenotypes[sig == "S2" & group == "Congenital anomalies"]
+digestive = all.phenotypes[sig == "S2" & group == "Digestive"]
+endocrine = all.phenotypes[sig == "S2" & group == "Endocrine/metabolic"]
+heme = all.phenotypes[sig == "S2" & group == "Hematopoetic"]
+mental= all.phenotypes[sig == "S2" & group == "Mental disorders"]
+labs.sig = all.phenotypes[sig == "S2" & group == "Labs"]
+neoplasms = all.phenotypes[sig == "S2" & group == "Neoplasms"]
+neuro = all.phenotypes[sig == "S2" & group == "Neurological"]
+
+
+
+cardio[order(p.adjusted)]
+congenital[order(p.adjusted)]
+digestive[order(p.adjusted)]
+endocrine[order(p.adjusted)]
+heme[order(p.adjusted)]
+mental[order(p.adjusted)]
+labs.sig[order(p.adjusted)]
+neoplasms[order(p.adjusted)]
+neuro[order(p.adjusted)]
+
+
+
+```
+
+
+Display the association for traits with FDR < 0.05
+
+
+```{r}
+
+cardio = all.phenotypes[sig == "S1" & group == "Circulatory system"]
+digestive = all.phenotypes[sig == "S1" & group == "Digestive"]
+endocrine = all.phenotypes[sig == "S1" & group == "Endocrine/metabolic"]
+heme = all.phenotypes[sig == "S1" & group == "Hematopoetic"]
+mental= all.phenotypes[sig == "S1" & group == "Mental disorders"]
+labs.sig = all.phenotypes[sig == "S1" & group == "Labs"]
+neoplasms = all.phenotypes[sig == "S1" & group == "Neoplasms"]
+neuro = all.phenotypes[sig == "S1" & group == "Neurological"]
+
+
+
+cardio[order(p.adjusted)]
+digestive[order(p.adjusted)]
+endocrine[order(p.adjusted)]
+heme[order(p.adjusted)]
+mental[order(p.adjusted)]
+labs.sig[order(p.adjusted)]
+neoplasms[order(p.adjusted)]
+neuro[order(p.adjusted)]
+
+
+
+```
+
+```{r}
+
+all.phenotypes[Pop == "AFR" & Phenotype %in% cardio$Phenotype]
+all.phenotypes[Pop == "AFR" & Phenotype %in% digestive$Phenotype]
+all.phenotypes[Pop == "AFR" & Phenotype %in% endocrine$Phenotype]
+all.phenotypes[Pop == "AFR" & Phenotype %in% heme$Phenotype]
+all.phenotypes[Pop == "AFR" & Phenotype %in% labs.sig$Phenotype]
+all.phenotypes[Pop == "AFR" & Phenotype %in% neoplasms$Phenotype]
+all.phenotypes[Pop == "AFR" & Phenotype %in% neuro$Phenotype]
+
+```
+
+
+Output summary statistics for supplement
+
+```{r}
+
+fwrite(all.phenotypes[, .(Phenotype, description, group, Beta, SE, Z, P, Pop, ncases, ncontrols)],
+       F("output/tables/supp_mtcnphewas_10212022.txt"), sep = "\t")
+
+```
+
+
+A few observations:
+
+1. There are more associations in the EUR because we have more power there. 
+2. Most of the associations seem to be related to alcohol comsumption or its effects:
+  - Mental: mtCN is negatively correlated with acohol use and acoholism-related disorders. This is likely because alcohol has been shown to reduce mtCN (e.g. see [this paper](https://www.sciencedirect.com/science/article/pii/S0027510707002825#bib36), [this paper](https://jpet.aspetjournals.org/content/298/2/737.short), and [this paper](https://www.scopus.com/record/display.uri?eid=2-s2.0-0032990245&origin=inward&txGid=d3cf5436bad57d1dedc9be70c1f3ba24&featureToggles=FEATURE_NEW_DOC_DETAILS_EXPORT:1,FEATURE_EXPORT_REDESIGN:0))
+  - Digestive: mtCN is negatively correlated with conditions such as liver abscess, chronic liver disease, portal hypertension, esophageal bleeding, and other disorders of the liver, which are likely correlated with mtCN indirectly through the effects of alcohol. The effect direction is consistent with the direct of correlation between alcholism and mtCN. Association between mtCN and portal hypertension and esophageal bleeding (in the same direction as here) was also reported in [Hagg et al.](https://link.springer.com/article/10.1007/s00439-020-02249-w#Fig4).
+  - INR: international normalization ratio measures the time for prothrombin to clot in blood in the patient relative to a standardized control. Higher INR means blood clots more slowly than expected and vice versa. mtCN is positively correlated with INR and it's unclear why this association might exist. I haven't found any literature on this. 
+  - Circulatory: There are lots of associations between mtCN and cardiac traits (e.g. cardiomyopathy, cardiomegaly, atrial fibrillation, cardiac dysrythmias, palpitations, and valve issues). MtCN is positively correlated with these traits, which is in the opposite direction if driven by alcohol use. For example, if alcohol increases risk of afib (which is a well-known association), mtCN should be negatively correlated with afib. So it's a bit unclear what's going on. These associations are also in the negative association found by Hagg et al. in their paper with cardiomegaly.
+3. mtCN is also associated with several epilsepsy-related ICD codes. I couldn't find evidence for this association in the literature but we know that epilepsy is a common symptom in mitochondrial disorders, including mtDNA deletion syndrome, which is consistent with the direction observed here.
+4. There are some other associations with mtCN that are less clear in what the underlying mechanism might be (e.g. prostate cancer, rickets, and iron metabolism).
+  
+Are these associations at least significant in AFR at the 0.05 FDR?
+
+Are the effects consistent between the two cohorts? Let's first check for cardiovascular traits.
+
+```{r}
+
+all.phenotypes.sig = unique(all.phenotypes[sig %in% c("S2"), Phenotype])
+all.phenotypes.sig = dcast(all.phenotypes[Phenotype %in% all.phenotypes.sig, ], Phenotype + group ~ Pop, value.var = "Beta")
+
+all.phenotypes.sig[, concordance := "discordant"]
+all.phenotypes.sig[(AFR < 0 & EUR <0) | (AFR >0 & EUR >0), concordance := "concordant"]
+
+table(all.phenotypes.sig[group == "Circulatory system", .SD, .SDcols = "concordance"])
+
+with(all.phenotypes.sig[group == "Circulatory system",], cor(AFR, EUR))
+
+ggplot(all.phenotypes.sig[group == "Circulatory system",], aes(EUR, AFR))+
+  geom_point()+
+  theme_classic()+
+  geom_abline(intercept = 0, slope = 1, color = "red")+
+  stat_smooth(method = "lm")
+
+```
+
+All 14 cardiovascular traits that were significantly associated in the EUR cohort are in the same direction in the AFR cohort. The correlation between the effect sizes is 0.56.
+
+Next, let's look at digestive traits.
+
+```{r}
+
+table(all.phenotypes.sig[group == "Digestive" | Phenotype %in% c("AST", "Bili_Total"), .SD, .SDcols = "concordance"])
+
+ggplot(all.phenotypes.sig[group == "Digestive",], aes(EUR, AFR))+
+  geom_point()+
+  theme_classic()+
+  geom_abline(intercept = 0, slope = 1, color = "red")+
+  stat_smooth(method = "lm")
+
+with(all.phenotypes.sig[group == "Digestive",], cor(AFR, EUR))
+
+```
+
+7/8 traits are in the same direction in the AFR cohort and the correlation in effect size is 0.65. 
+
+Next, neurological traits (epilepsy):
+
+```{r}
+
+table(all.phenotypes.sig[group == "Neurological", .SD, .SDcols = "concordance"])
+
+ggplot(all.phenotypes.sig[group == "Neurological",], aes(EUR, AFR))+
+  geom_point()+
+  theme_classic()+
+  geom_abline(intercept = 0, slope = 1, color = "red")+
+  stat_smooth(method = "lm")
+
+with(all.phenotypes.sig[group == "Neurological",], cor(AFR, EUR))
+
+```
+
+There is no correlation here and all effects are in the opposite direction.
+
+
+```{r}
+
+glm.mtcn = rbind(glm.afr, glm.eur)
+glm.mtcn = glm.mtcn[, .(ncases = mean(ncases), ncontrols = mean(ncontrols)), 
+                    by = c("Phenotype","Pop")]
+glm.mtcn$Phenotype = as.factor(glm.mtcn$Phenotype)
+#glm.mtcn[, ntotal := ncases + ncontrols]
+glm.mtcn = melt(glm.mtcn, id.vars = c("Phenotype", "Pop"))
+glm.mtcn = addPhecodeInfo(glm.mtcn)
+
+ggplot(glm.mtcn[variable == "ncases"], aes(Phenotype, value))+
+  geom_bar(stat = "identity")+
+  theme_classic()+
+  facet_grid(Pop~group, scale = "free")+
+  theme(axis.text.x = element_blank(),
+        panel.spacing = unit(0.3, "lines"), 
+        strip.text.x = element_text(angle = 270),
+        axis.ticks.x = element_blank(),
+        strip.background=element_rect(fill=NA, size = 0.8),
+        panel.border = element_rect(size = 0.2, fill = NA, color = "grey", linetype = "dotted"))+
+  coord_cartesian(clip = 'off')
+
+```
+
+
+
+
+
+

@@ -1,0 +1,324 @@
+---
+title: "Analysis of mtDNA copy number heritability"
+author: "Arslan A. Zaidi"
+date: "6/22/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(ggplot2)
+library(data.table)
+F = rprojroot::is_rstudio_project$make_fix_file()
+"%ni%" <- Negate("%in%")
+neg <- function(x){-x}
+
+```
+
+We observed that the heritability of mtDNA copy number (rmtCN) is higher in the AFR cohort (~0.23) than in the EUR cohort (~0.06). Here, I am investigating whether this difference is 'real' or driven by some artifact in the data/analysis.
+
+My first hypothesis was that this is due to inadequate correction for blood counts. The heritability of the counts of some blood cells (Neutrophils and total white blood cells) is expected to be higher in the AFR cohort than in the EUR cohort. This is at least due to one large effect variant (Duffy-Null) which is more common in African Americans than in Europeans. Thus, some of the heritability underlying rmtCN in the AFR cohort might reflect the heritability of blood counts. This might occur if the CBC report was generated a sample that is different in blood cell composition from the sample which was used for exome-sequencing.
+
+Let's first show that the heritability of Neutrophils and WBC is higher in the AFR cohort than in the EUR cohort.
+
+```{r}
+
+afr.labs = fread(F("data/gcta/AFR/mtcarta/PMBB_mgrm1_labs.AFR.hsq"), sep = "\t")
+eur.labs = fread(F("data/gcta/EUR/mtcarta/PMBB_mgrm1_labs.EUR.hsq"), sep = "\t")
+
+colnames(afr.labs) = colnames(eur.labs) = c("filename","partition","estimate","se")
+afr.labs$pop = "AFR"
+eur.labs$pop = "EUR"
+h2.labs = rbind(afr.labs, eur.labs)
+
+h2.labs[, lab:=tstrsplit(filename, split = "\\.")[2]]
+h2.labs = h2.labs[lab %ni% c("band_CON","Basophil_CON","Eosinophil_CON","Lymphocyte_CON","Monocyte_CON","WBC","Platelets"),]
+
+h2.labs = h2.labs[grep("Sum", h2.labs$partition)]
+
+#require the h2 to be > 0 in at least one cohort
+lab.ix = unique(h2.labs[estimate - 1.96*se > 0, lab])
+
+plt_labs.h2 = ggplot(h2.labs[lab %in% lab.ix])+
+  geom_point(aes(lab, estimate, color = pop), 
+             position = position_dodge(width = 0.4))+
+  geom_hline(yintercept = 0, linetype = "dotted")+
+  geom_errorbar(aes(lab, ymin = estimate-1.96*se, ymax = estimate+1.96*se, color = pop), 
+                position = position_dodge(width = 0.4))+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  labs(y = bquote("h"[g]^2), 
+       color = "Cohort",
+       x = "Lab measurement")+
+  scale_color_manual(values = c("#7570b3","#d95f02"))
+
+plt_labs.h2
+
+```
+
+```{r}
+
+ggsave(F("output/plots/plt_pmbb_labs.h2.png"),
+       plt_labs.h2,
+       width = 7, height = 5)
+
+```
+
+The plot shows that neutrophils and WBC (and maybe even AST) have a higher heritability in the AFR cohort than in the EUR cohort. I suspect most of this is because of the DARC locus. Let's check if that's the case. 
+
+```{r}
+
+neut1 = fread(F("data/gcta/AFR/chrom/PMBB_reml_AFR.neutrophil.covar.hsq"))
+neut2 = fread(F("data/gcta/AFR/chrom/PMBB_reml_AFR.neutrophil.rs2814778.covar.hsq"))
+
+neut1 = neut1[grep("/Vp", neut1$Source),]
+neut2 = neut2[grep("/Vp", neut2$Source),]
+
+neut1$Model = "No DARC"
+neut2$Model = "DARC"
+neut1$chrom = neut2$chrom = seq(1,22)
+
+neut = rbind(neut1, neut2)
+neut$chrom = factor(neut$chrom, levels = seq(1,22))
+neut$Model = factor(neut$Model, levels = c("No DARC", "DARC"))
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+ggcols = rev(gg_color_hue(4))
+
+plt_h2_neutrophils = ggplot(neut, aes(chrom, Variance, color = Model))+
+    geom_hline(yintercept = 0, linetype = "dotted")+
+  geom_point(position = position_dodge(width = 0.5))+
+  geom_errorbar(aes(chrom, ymin = Variance - 1.96*SE, ymax = Variance + 1.96*SE),
+                width = 0.1, position = position_dodge(width = 0.5))+
+  theme_classic()+
+  scale_color_manual(values = ggcols[c(3,4)])+
+  theme(legend.position = c(0.8,0.5))+
+  labs(y = bquote("h"[g]^2),
+       x = "Chromosome")
+
+plt_h2_neutrophils
+
+
+```
+
+Yes it is. Let's check if the heritability of rmtCN is reduced if we include genotype at the DARC locus as a fixed effect in the model.
+
+```{r}
+
+fdat = function(pop){
+  dat1 = fread(F(paste("data/gcta/",pop,"/chrom/PMBB_reml_",pop,".logmtcn.nocovar.hsq", sep = "")))
+  dat2 = fread(F(paste("data/gcta/",pop,"/chrom/PMBB_reml_",pop,".logmtcn.noblood.hsq", sep = "")))
+  dat3 = fread(F(paste("data/gcta/",pop,"/chrom/PMBB_reml_",pop,".logmtcn.blresid.hsq", sep = "")))
+  dat4 = fread(F(paste("data/gcta/",pop,"/chrom/PMBB_reml_",pop,".logmtcn.blresid.darc.hsq", sep = "")))
+  
+  dat1$Model = "No covar"
+  dat2$Model = "PCs"
+  dat3$Model = "Blood + PCs"
+  dat4$Model = "Blood + PCs + DARC"
+  
+  dat1 = dat1[grep("/Vp", dat1$Source),]
+  dat2 = dat2[grep("/Vp", dat2$Source),]
+  dat3 = dat3[grep("/Vp", dat3$Source),]
+  dat4 = dat4[grep("/Vp", dat4$Source),]
+
+  dat1$chrom = dat2$chrom = dat3$chrom = dat4$chrom = seq(1,22)
+  dat = rbind(dat1, dat2, dat3, dat4)
+  dat$Model = factor(dat$Model, levels = c("No covar", "PCs", "Blood + PCs", "Blood + PCs + DARC"))
+  dat$chrom = factor(dat$chrom, levels = seq(1,22))
+  dat$pop = pop
+  return(dat)
+}
+
+dat.afr = fdat("AFR")
+dat.eur = fdat("EUR")
+
+dat = rbind(dat.afr, dat.eur)
+dat.summary = dat[, .(Variance = sum(Variance)), by = c("Model","pop")]
+
+plt_partition = ggplot(dat, aes(chrom, Variance, color = Model))+
+  geom_hline(yintercept = 0, linetype = "dotted")+
+  geom_point(position = position_dodge(width = 0.5))+
+  geom_errorbar(aes(chrom, ymin = Variance - 1.96*SE, ymax = Variance +1.96*SE),
+                width = 0.1, position = position_dodge(width = 0.5))+
+  theme_classic()+
+  facet_grid(pop~., scales = "free")+
+  labs(x = "Chromosome", y = bquote("h"[g]^2))+
+  scale_color_manual(values = ggcols)+
+  theme(legend.position = c(0.8, 0.85),
+        legend.background = element_blank(),
+        axis.text = element_text(size = 11),
+        axis.title = element_text(size = 12), 
+        legend.text = element_text(size = 8),
+        strip.text = element_text(size = 12),
+        legend.title = element_text(size= 10),
+        legend.key.size = unit(0.15, "inches"))
+
+plt_partition
+
+```
+
+Including DARC in the model does not change the heritability in the AFR cohort drastically though it reduces the h2 from chromosome ever so slightly. Thus, the heritability in rmtCN in the AFR cohort is not driven by the effects of the DARC locus that contributes to neutrophil heritability.
+
+```{r}
+
+ggsave(F("output/plots/Fig3/plt_mtcn_chrom_08242022.png"), 
+         plt_partition,
+         height = 4, width = 7)
+
+ggsave(F("output/plots/Fig3/plt_h2_neutrophils_chrom_08242022.png"), 
+         plt_h2_neutrophils,
+         height = 3, width = 5)
+
+```
+
+
+
+
+So the heritability on chromosome 1 is entirely due to the DARC locus. There are no other remaining variants that explain this difference. 
+
+```{r}
+
+plat = fread(F("data/gcta/AFR/chrom/PMBB_reml_AFR.platelets.covar.hsq"))
+plat = plat[grep("/Vp", plat$Source)]
+plat$chrom = factor(seq(1,22))
+
+ggplot(plat, aes(chrom, Variance))+
+  geom_hline(yintercept = 0, linetype = "dotted")+
+  geom_point(position = position_dodge(width = 0.5))+
+  geom_errorbar(aes(chrom, ymin = Variance - 1.96*SE, ymax = Variance + 1.96*SE),
+                width = 0.1, position = position_dodge(width = 0.5))+
+  theme_classic()
+  
+
+```
+
+#### archived #### 
+
+Another hypothesis is that perhaps the IDs have been scrambled in the ancestry file relative to the phenotype/covariates file. To test this, let's see if ancestry is correlated with neutrophil count in the AFR cohort.
+
+```{r eval = FALSE}
+
+covar = fread(F("data/phenotype/PMBB_plink4mat_AFR.blood_05112022.covar"))
+ancestry = fread(F("data/phenotype/pmbb.afr.weighted.04222022.glanc"))
+
+covar = merge(covar, ancestry, by = "IID")
+
+ggplot(covar[Neutrophil_median != -9], 
+       aes(African, Neutrophil_median))+
+  geom_point()+
+  theme_classic()+
+  stat_smooth(method = "lm")
+
+```
+
+There appears to be a strong negative correlation between African ancestry and Neutrophil count (as expected). Let's test this formally against a permuted distribution. 
+
+```{r eval = FALSE}
+
+l1 = lm(data = covar, Neutrophil_median ~ African)
+beta = summary(l1)$coefficients[2,1]
+mat = matrix(NA, nrow = 1e3, ncol = 1)
+for(i in 1:1e3){
+  l2 = lm(covar$Neutrophil_median ~ sample(covar$African))
+  mat[i,] = summary(l2)$coefficients[2,1]
+
+}
+
+hist(mat, col = "lightblue", 
+     main = "Beta (Neutrophil ~ African ancestry)",
+     xlab = "Permuted distribution",
+     xlim = c(-1,1))
+abline(v = beta, col = "red", lty = 2)
+
+```
+
+Ok so clearly the effect of ancestry on Neutrophil count is far from random suggesting that the IDs are not scrambled with respect to the ancestry file.
+
+#### archive end####
+
+One possibility is that the difference in heritability between the AFR and EUR cohorts reflects a true difference in heritability underlying mtCN perhaps due to the higher frequency of mtCN-associated variants in the AFR cohort. I've shown in a separate notebook (plt_longchamps_v_pmbb_2.rmd) that the heritability explained by the GWAS variants is similar between the two cohorts so this can't be it.
+
+
+Let's further explore the following possibilities:
+
+1. Heritability is driven by known genetic variants (besides DARC) that are differentiated between AFR and EUR (e.g. APOL1) and test if including those in the model affects the h2 estimates. 
+2. AST also has a higher h2 in the AFR cohort. Could genetic variants underlying this trait be contributing to the h2 of mtcn through their effects on AST? include AST in the model and check. 
+3. There might be measurement error in blood traits so they might serve as imperfect proxies. Perhaps using their polygenic risk scores directly in the model might provide more accurate correction?
+4. Tthe PMBB doesn't have all possible blood traits and maybe the h2 is contributed by the h2 of other unmeasured traits. What if we include the PRS of a wider range of blood traits?
+5. Finally, I carried out admixture mapping to find highly differentiated loci that might be associated with rlrmtCN in the AFR cohort that might be contributing to h2. Let's include the top hits in the model and see if it changes anything.
+
+I ran all these models. 
+
+```{r}
+
+
+alt.h2 = fread(F("data/gcta/AFR/mtcn.experiments/PMBB_reml_AFR.mtcn.logmtresid.all.hsq"))
+colnames(alt.h2) = c("Model","Q","Estimate" ,"SE")
+alt.h2$Q = NULL
+
+alt.h2 = rbind(alt.h2, data.table(Model = "EUR", Estimate = 0.096061,SE = 0.021656))
+alt.h2$Model = factor(alt.h2$Model, levels = c("darc.a","darc.ad", "apol1","ast","blprs","blprs.ext","lanchits","EUR"))
+
+
+plt_alt.h2 = ggplot(alt.h2, aes(Model, Estimate))+
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed")+
+  geom_point()+
+  geom_errorbar(aes(Model, ymin = Estimate - 1.96*SE, ymax = Estimate + 1.96*SE), 
+                width = 0.05)+
+  theme_classic()+
+  scale_x_discrete(labels = c("AST", "APOL1", "DARC \n(add.)", "DARC \n(add. + rec.)", "PRS\n (Blood)", "PRS\n (Blood ext.)", "Admixmap hits","EUR"))+
+  labs(x = "Model", y = bquote(h[g]^2~ " (rlrmtCN)"))
+
+plt_alt.h2
+
+
+```
+
+
+
+```{r}
+
+
+ggsave(F("output/plots/plt_mtcn_h2_afr_alt.models.pdf"),
+       plt_alt.h2,
+       height = 3, width = 7)
+
+```
+
+
+
+### Reduced figure for the poster
+
+```{r}
+
+alt.h3 = alt.h2[Model %in% c("EUR", "darc.ad","lanchits")]
+alt.h3$Model = factor(alt.h3$Model, levels = c("darc.ad","lanchits","EUR"))
+plt_alt.h3 = ggplot(alt.h3, aes(Model, Estimate))+
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed")+
+  geom_point()+
+  geom_errorbar(aes(Model, ymin = Estimate - 1.96*SE, ymax = Estimate + 1.96*SE), 
+                width = 0.05)+
+  theme_classic()+
+  scale_x_discrete(labels = c("AFR","AFR\n(+admixmap)","EUR"))+
+  labs(x = "Model", y = bquote(h[g]^2~ " (mtCN)"))
+
+plt_alt.h3
+
+```
+
+
+
+
+
+
+
+
+

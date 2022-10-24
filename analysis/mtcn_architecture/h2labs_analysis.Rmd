@@ -1,0 +1,96 @@
+---
+title: "Lab h2 analyses"
+author: "AAZaidi"
+date: "6/17/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(data.table)
+library(ggplot2)
+
+F = rprojroot::is_rstudio_project$make_fix_file()
+"%ni%" <- Negate("%in%")
+
+```
+
+
+```{r}
+vg.afr = fread(F("data/gcta/PMBB_mgrm1_labs.AFR.hsq"))
+colnames(vg.afr) = c("filename","Source","Value","SE")
+vg.afr = unique(vg.afr, by = c("Source", "filename"))
+vg.afr$pop = "AFR"
+
+vg.eur = fread(F("data/gcta/PMBB_mgrm1_labs.EUR.hsq"))
+colnames(vg.eur) = c("filename","Source","Value","SE")
+vg.eur = unique(vg.eur, by = c("Source", "filename"))
+vg.eur$pop = "EUR"
+
+vg = rbind(vg.eur, vg.afr)
+
+vg$Lab = sapply(vg$filename, function(x){unlist(strsplit(x, split = "\\."))[2]})
+
+vg[, lower := Value - 1.96*SE]
+vg[, upper := Value + 1.96*SE]
+
+vg = vg[, .(Source, Value, SE, Lab, lower, upper, pop)]
+# vg$nsnps = 1e5
+# vg[, norm.value := Value/nsnps]
+```
+
+
+```{r}
+labs.ix = vg[Source == "Sum of V(G)/Vp" & lower > 0, Lab]
+labs.ix=setdiff(labs.ix, c("WBC","Platelets", "Lymphocyte_CON","Eosinophil_CON","Basophil_CON","Monocyte_CON"))
+
+plt_h2.overall = ggplot(vg[Source == "Sum of V(G)/Vp" & Lab %in% labs.ix], 
+       aes(Lab, Value, color = pop))+
+    geom_hline(yintercept = 0, linetype = "dotted")+
+  geom_point(position = position_dodge(width = 0.4))+
+  geom_errorbar(aes(Lab, ymin = Value-1.96*SE, ymax = Value+1.96*SE), 
+                position = position_dodge(width = 0.4))+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  labs(y = bquote("h"[g]^2), 
+       color = "Cohort")+
+  scale_color_manual(values = c("#7570b3","#d95f02"))
+
+plt_h2.overall
+
+```
+
+```{r}
+
+ggsave(F("output/plots/plt_labh2_bypop.png"), 
+       height = 4, width = 6)
+
+```
+
+The h2 od blood traits (e.g. Neutrophils, WBC, and even Monocytes) is greater in AFR than in EUR. This might be driven, at least in part, by the DARC association which is very commin in people with African ancestry and less common in European ancestry individuals and has a huge effect. Let's calculate the h2 with and without correction.
+
+```{r}
+
+```
+
+
+```{r}
+cv.afr = fread(F("data/phenotype/pmbb_intraind_cv_neutrophil_afr.txt"))
+cv.eur = fread(F("data/phenotype/pmbb_intraind_cv_neutrophil_eur.txt"))
+
+cv.afr$pop="AFR"
+cv.eur$pop = "EUR"
+
+cv = rbind(cv.afr, cv.eur)
+ggplot(cv)+
+  geom_density(aes(cv, fill = pop), alpha = 0.4)
+
+```
+
+
+
+

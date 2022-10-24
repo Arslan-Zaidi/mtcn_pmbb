@@ -1,0 +1,113 @@
+---
+title: "Comparing global ancestry b/w ADMIXTURE and RFMIX"
+author: "AAZaidi"
+date: "4/21/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(data.table)
+library(ggplot2)
+
+F = rprojroot::is_rstudio_project$make_fix_file()
+     
+```
+
+
+```{r}
+
+qfile = fread(F("data/genotype/admixture/PMBB-Release-2020-2.0_genetic_genotype.maf0.01.ldpruned.AFR.nomt.2.Q"))
+
+famfile = fread(F("data/genotype/admixture/PMBB-Release-2020-2.0_genetic_genotype.maf0.01.ldpruned.AFR.nomt.fam"))
+
+qfile = cbind(famfile$V1, qfile)
+colnames(qfile) = c("IID","ADMIX.African","ADMIX.European")
+
+```
+
+
+```{r}
+
+glanc = fread(F("data/rfmix/pmbb.afr.1kg.ceuryi.all.0.glanc"))
+colnames(glanc) = c("African","European","UNK","CHROM","NSNPS","IID")
+
+glanc.summary = glanc[, .(African = sum(African*NSNPS)/sum(NSNPS),
+                          European = sum(European*NSNPS)/sum(NSNPS),
+                          UNK = sum(UNK*NSNPS)/sum(NSNPS)), by = IID]
+
+```
+
+```{r}
+
+glanc.summary = merge(glanc.summary, qfile, by = "IID")
+
+ggplot(glanc.summary, aes(African, ADMIX.African))+
+    geom_abline(intercept = 0, slope = 1, color = "red")+
+  geom_point(alpha = 0.5)+
+  labs(x = "Prop. of African ancestry (RFMIX)",
+       y = "Prop. of African ancestry (ADMIXTURE)")+
+  theme_classic()+
+  annotate(geom = "text", x = 0.25, y = 0.75, label = bquote("r"^2~"=0.996"))
+
+```
+Write to file
+
+```{r}
+
+fwrite(glanc.summary[, .(IID, African, European)], 
+       F("data/genotype/pmbb.afr.weighted.04222022.glanc"), 
+       sep = "\t", col.names=TRUE, row.names=FALSE, quote = FALSE)
+
+```
+
+```{r}
+
+glanc2 = fread(F("data/rfmix/pmbb.afr.1kg.ceuryi.all.0.Cleaned.glanc"))
+colnames(glanc2) = c("African","European","UNK","CHROM","NSNPS","IID")
+
+glanc2.summary = glanc2[, .(African = sum(African*NSNPS)/sum(NSNPS),
+                          European = sum(European*NSNPS)/sum(NSNPS),
+                          UNK = sum(UNK*NSNPS)/sum(NSNPS)), by = IID]
+```
+
+```{r}
+
+
+glanc2.summary = merge(glanc2.summary, qfile, by = "IID")
+
+ggplot(glanc2.summary, aes(African, ADMIX.African))+
+    geom_abline(intercept = 0, slope = 1, color = "red")+
+  geom_point(alpha = 0.5)+
+  labs(x = "Prop. of African ancestry (RFMIX)",
+       y = "Prop. of African ancestry (ADMIXTURE)")+
+  theme_classic()+
+  annotate(geom = "text", x = 0.25, y = 0.75, label = bquote("r"^2~"=0.996"))
+
+```
+
+
+```{r}
+
+
+fwrite(glanc.summary2[, .(IID, African, European)], 
+       F("data/genotype/pmbb.afr.weighted.04222022.Cleaned.glanc"), 
+       sep = "\t", col.names=TRUE, row.names=FALSE, quote = FALSE)
+
+```
+
+
+```{r}
+glanc.merged = merge(glanc.summary, glanc2.summary)
+
+ggplot(glanc.merged, aes(ADMIX.African.y, ADMIX.African.x))+
+  geom_point()
+
+```
+
+
+

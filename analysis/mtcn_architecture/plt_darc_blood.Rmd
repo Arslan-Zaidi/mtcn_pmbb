@@ -1,0 +1,83 @@
+---
+title: "Associations with DARC with and without blood counts"
+author: "AAZaidi"
+date: "2022-08-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+
+library(data.table)
+library(ggplot2)
+library(scattermore)
+
+F = rprojroot::is_rstudio_project$make_fix_file()
+
+read.gwas = function(path){
+  
+  dat = fread(F(path))
+  colnames(dat) = c("CHROM","BP","SNP","REF","ALT","A1","TEST","CT","BETA","SE","TSTAT","P","ERR")
+  dat$TEST=NULL
+  dat = dat[ERR==".",]
+  dat$ERR = NULL
+  dat[, sig := -log10(P)]
+  #dat$CHROM = factor(dat$CHROM, levels = seq(1,22))
+
+  # dat = dat[SNP %in% info$SNP]
+  
+  return(dat)
+}
+
+```
+
+
+```{r}
+
+afr.nobl = read.gwas("data/mtgwas/mtCN/imputed/AFR/pmbb_mtgwas_logmtcn.filtered.imputed.AFR.chr1.nobl.log.mtcn.glm.linear.gz")
+afr.bl = read.gwas("data/mtgwas/mtCN/imputed/AFR/residuals/pmbb_mtgwas_logmtcn.filtered.residuals.AFR.chr1.rlrmtcn.glm.linear.gz")
+
+#afr.nobl[,sig:=-log10(P)]
+afr.bl[, sig:=-log10(P)]
+afr.nobl[, sig:=-log10(P)]
+
+plt.afr.nobl = ggplot(afr.nobl, aes(BP, sig))+
+  geom_point(color = "grey", alpha = 0.4)+
+  theme_classic()+
+  theme(panel.spacing = unit(0.01, "lines"),
+        legend.position = "none")+
+  labs(x = "Position on chromosome 1", y = bquote(-log[10]~"P value"),
+       title = bquote("Model: lrmtCN ~ sex + age + age"^2~"+ gPCs1-20"))+
+  geom_hline(yintercept = -log10(5e-08), linetype = "dashed", color = "red")+
+  scale_y_continuous(limits = c(0, 33))
+
+plt.afr.bl = ggplot(afr.bl, aes(BP, sig))+
+  geom_point(color = "grey", alpha = 0.4)+
+  theme_classic()+
+  theme(panel.spacing = unit(0.01, "lines"),
+        legend.position = "none")+
+  labs(x = "Position on chromosome 1", y = bquote(-log[10]~"P value"),
+       title = bquote("Model: rlrmtCN ~ gPCs1-20"))+
+  geom_hline(yintercept = -log10(5e-08), linetype = "dashed", color = "red")+
+  scale_y_continuous(limits = c(0, 33))
+
+
+
+```
+
+
+```{r}
+
+ggsave(F("output/plots/plt_mtcngwas_imputed.nobl.chr1.AFR.png"), plt.afr.nobl, 
+       height = 4, width = 7)
+
+ggsave(F("output/plots/plt_mtcngwas_imputed.bl.chr1.AFR.png"), plt.afr.bl, 
+       height = 4, width = 7)
+
+```
+
+

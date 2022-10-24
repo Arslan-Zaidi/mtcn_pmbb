@@ -1,0 +1,357 @@
+---
+title: "Mitonuclear incompatibility"
+author: "AAZaidi"
+date: "4/22/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(data.table)
+library(ggplot2)
+library(patchwork)
+F = rprojroot::is_rstudio_project$make_fix_file()
+
+```
+
+```{r}
+
+labs = fread(F("data/mtgwas/mitonuc.incomp/pmbb_labs_phewas_mitonuc_bxcx_10212022.txt"))
+labs = labs[predictor %in% c("European_Haplogroup","European_ancestry","Interaction")]
+
+labs.descriptions = data.table(phenotype = c("A1C", "ALB",  "Alkphos", "ALT", "AST", "CK", "CRP", "Bili_Direct", "ESR", "Glucose_fasting", "GGT", "Chol_HDL", "Bili_Indirect", "INR", "Chol_LDL", "Metamyeloctye", "PTT", "Glucose", "Creatinine", "Bili_Total", "Chol_Total", "triglycerides", "urobili", "Basophil_median", "Eosinophil_median", "Lymphocyte_median", "Monocyte_median", "Neutrophil_median", "PLATELET_median", "WBC_median", "rlrmtCN", "Height", "BMI", "SYSTOLIC","DIASTOLIC"),
+                               description = c("Hemoglobin A1C ", "Albumin levels", "Alkaline Phosphatase", "Alaninie Aminotranferase", "Aspartate Aminotransferase", "Creatine Kinase", "C-Reactive Protein High Sensitivity", "Bilirubin (Direct)", "Erythrocyte Sedimentation Rate", "Fasting Glucose", "Gamma Glutamyl Transferase", "High Density Lipoprotein Cholestrol", "Bilirubin (Indirect)", "Prothrombin Time", "Low Density Lipoprotein Cholesterol", "Metamyelocyte Manual", "Partial Thromboplastin Time", "Glucose", "Serum Creatinine", "Total Bilirubin", "Total Cholesterol", "Triglycerides", "Urine Urobilinogen", "Basophil count", "Eosinophil count", "Lymphocyte count","Monocyte count", "Neutrophil count", "Platelet count","White Blood Cell count","Log(relative mtDNA copy number)","Height","Body mass index","Systolic blood pressure","Diastolic blood pressure"))
+                              
+
+labs = merge(labs, labs.descriptions, by = "phenotype")
+labs[, group := "Labs"]
+
+```
+
+
+```{r}
+
+phecodes.all = fread(F("data/mtgwas/mitonuc.incomp/pmbb_binary_phewas_mitonuc_10212022.txt"))
+phecodes.all = phecodes.all[, c(1:10)]
+colnames(phecodes.all)[c(9,10)] = c("description", "group")
+phecodes = phecodes.all[predictor %in% c("European_Haplogroup","European_ancestry","Interaction") & 
+                      ncases > 20 & convergence == TRUE,c(1:5,7:10)]
+
+
+```
+
+Combine the two
+
+```{r}
+colnames(labs)[6] = "ncases"
+labs$ncontrols = 0
+labs = labs[, c(1:6,9,7,8)]
+colnames(phecodes)[1]= "phenotype"
+all.phenotypes = rbind(phecodes, labs)
+
+all.phenotypes[, p.adjusted := p.adjust(pvalue, method = "BH")]
+all.phenotypes[, p.adjusted2 := p.adjust(pvalue, n = 3624, method = "BH")]
+all.phenotypes[, sig := "NS"]
+all.phenotypes[p.adjusted < 0.05, sig := "S1"]
+all.phenotypes[p.adjusted < 0.005, sig := "S2"]
+
+
+all.phenotypes[,predictor := predictor]
+all.phenotypes[predictor == "European_ancestry", predictor := "Nuclear\n ancestry"]
+all.phenotypes[predictor == "European_Haplogroup", predictor := "MT\n haplogroup"]
+
+all.phenotypes$predictor = factor(all.phenotypes$predictor, 
+                                  levels = c("Nuclear\n ancestry", "MT\n haplogroup","Interaction"))
+
+all.phenotypes$group = stringr::str_to_sentence(all.phenotypes$group)
+
+plt_manhattan = ggplot(all.phenotypes, aes(phenotype, -log10(pvalue), color = sig))+
+  geom_point(size = 0.7)+
+  theme_classic()+
+  facet_grid(predictor~group, scales = "free")+
+  theme(axis.text.x = element_blank(), 
+        panel.spacing = unit(0.3, "lines"), 
+        strip.text.x = element_text(angle = 270),
+        axis.ticks.x = element_blank(),
+        strip.background=element_rect(fill=NA, size = 0.8),
+        panel.border = element_rect(size = 0.2, fill = NA, color = "grey", linetype = "dotted"))+
+  scale_fill_manual(values = c("#2b8cbe","#fec44f","#d95f02"),
+                     labels = c("FDR>0.05", "FDR<0.05","FDR < 0.005"))+
+  scale_color_manual(values = c("#2b8cbe","#fec44f","#d95f02"),
+                     labels = c("FDR > 0.05", "FDR < 0.05","FDR < 0.005"))+
+  scale_shape_manual(values = c(25,24), labels = c("Up","Down"))+
+  guides(fill = "none")+
+  coord_cartesian(clip = 'off')+
+  labs(x = "Phenotypes", 
+       y = bquote("-Log"[10]~"P value"), color = "Sig.")
+
+
+
+plt_manhattan
+
+```
+
+```{r eval = FALSE}
+
+ggsave(F("output/plots/plt_mtnuc_manhattan_10212022.svg"), 
+       plt_manhattan, height = 5, width = 7)
+
+```
+
+
+```{r}
+
+fwrite(all.phenotypes[, .(phenotype, predictor, beta, zvalue, pvalue, ncases, ncontrols, description)],
+       F("output/tables/suppdat_mitonuc_incomp_10212022.txt"), 
+       sep = "\t")
+
+```
+
+
+```{r}
+
+all.phenotypes.sig = all.phenotypes[p.adjusted<0.005,]
+all.phenotypes.sig[order(p.adjusted)]
+
+```
+
+```{r}
+
+all.phenotypes.sig = all.phenotypes[p.adjusted<0.05 & predictor == "MT\n haplogroup",]
+all.phenotypes.sig[order(p.adjusted)]
+
+```
+
+First, let's plot the effect of ancestry and haplogroup on mtcn
+
+```{r}
+all.phenotypes[phenotype == "rlrmtCN",]
+```
+
+
+```{r}
+
+mtcn = fread(F("data/phenotype/PMBB_plink4mat_combined.blood_residuals_10212022.pheno"))
+afr.covar = fread(F("data/phenotype/PMBB_plink4mat_AFR.blood_07152022.covar"))
+ancestry = fread(F("data/genotype/pmbb.afr.weighted.04222022.glanc"))
+afr.covar[Haplo1 == "L", `:=`(regional_haplo, "African")]
+afr.covar[Haplo1 %in% c("H", "I", "J", "K", "N", "R", "T", "U", "V", "W", "X"), `:=`(regional_haplo,
+  "European")]
+afr.covar = afr.covar[regional_haplo %in% c("African", "European")]
+afr.covar$regional_haplo = factor(afr.covar$regional_haplo)
+afr.covar$regional_haplo = relevel(afr.covar$regional_haplo, ref = "African")
+afr.covar = melt(afr.covar, id.vars = c("FID", "IID", "Sex", "Haplogroup", "Haplo1",
+  "Haplo2", "regional_haplo"))
+afr.covar = afr.covar[-grep("PC", afr.covar$variable), ]
+afr.covar[value == -9, `:=`(value, NA)]
+afr.covar = dcast(afr.covar, FID + IID + Sex + Haplogroup + Haplo1 + Haplo2 + regional_haplo ~
+  variable)
+afr.covar = merge(afr.covar, ancestry[, .(IID, European)], by = "IID")
+
+
+mtcn = merge(mtcn, afr.covar, by = "IID")
+
+b_afr = round(all.phenotypes[phenotype == "rlrmtCN" & predictor == "Nuclear\n ancestry", beta], 2)
+b_eur = round(sum(all.phenotypes[phenotype == "rlrmtCN" & predictor %in% c("Nuclear\n ancestry", "Interaction"), beta]), 2)
+
+p_int = formatC(all.phenotypes[phenotype == "rlrmtCN" & predictor == "Interaction", pvalue],2)
+
+plt_mtcn = ggplot(mtcn, aes(European, rlrmtcn, color = regional_haplo))+
+  geom_point(alpha = 0.2)+
+  stat_smooth(method = "lm")+
+  labs(x = "Prop. European ancestry",
+       y = "MtDNA abundance (rlrmtCN)",
+       color = "MT Haplogroup")+
+  scale_color_manual(values = c("#7570b3","#d95f02"))+
+  annotate(geom = "text", x = 0.5, y = 4.5, label = bquote(beta[European]~"= "~.(b_eur)), 
+           color = "#d95f02", hjust = 0)+
+  annotate(geom = "text", x = 0.5, y = 4, label = bquote(beta[African]~"= "~.(b_afr)), 
+           color = "#7570b3", hjust = 0)+
+  annotate(geom = "text", x = 0.5, y = 3.5, label = bquote("P-value"[Interaction]~"="~.(p_int)), 
+           color = "black", hjust = 0)+
+  theme_classic()+
+  theme(axis.text = element_text(size = 11), 
+        axis.title = element_text(size = 14),
+        legend.text = element_text(size = 12))
+
+plt_mtcn
+
+```
+
+
+```{r eval = FALSE}
+
+ggsave(F("output/plots/plt_mtnuc_mtcn_10212022.svg"), 
+       plt_mtcn, height = 5, width = 7)
+
+```
+
+
+```{r}
+
+qpheno.resids = fread(F("data/mtgwas/mitonuc.incomp/pmbb_qphenoresids_sex_age_age2_08142022.txt"))
+
+qphenos = unique(qpheno.resids$phenotype)
+b_eur = all.phenotypes[phenotype %in% qpheno.resids$phenotype & predictor == "Nuclear\n ancestry", .(beta = round(beta,2)), by = "phenotype"]
+b_afr = all.phenotypes[phenotype %in% qpheno.resids$phenotype & predictor %in% c("Nuclear\n ancestry", "Interaction"), .(beta = sum(beta)), by = "phenotype"]
+
+qpheno.labs = c("rlrmtCN" = "rlrmtCN", "CK" = "Creatine Kinase", "Creatinine" = "Creatinine", 
+                "DIASTOLIC" = "Diastolic", "Neutrophil_median" = "Neutrophils", 
+                "SYSTOLIC" = "Systolic", "triglycerides" = "Triglycerides")
+
+plt_qpheno = ggplot(qpheno.resids, 
+       aes(European, residuals, color = regional_haplo))+
+    geom_point(alpha = 0.05)+
+  stat_smooth(method = "lm", size = 0.5)+
+  labs(x = "Prop. European ancestry",
+       y = "Trait value (residuals)",
+       color = "MT Haplogroup")+
+  facet_wrap(~phenotype, scales = "free",
+             labeller = as_labeller(qpheno.labs))+
+  scale_color_manual(values = c("#7570b3","#d95f02"))+
+  theme_classic()+
+  theme(axis.text = element_text(size = 11), 
+        axis.title = element_text(size = 14),
+        legend.text = element_text(size = 12))
+
+plt_qpheno
+
+```
+
+
+```{r}
+
+bpheno.preds = fread(F("data/mtgwas/mitonuc.incomp/pmbb_bphenopreds_dat_08152022.txt"))
+bphenos = unique(bpheno.preds$Phenotype)
+bpheno.preds$Phenotype = as.factor(bpheno.preds$Phenotype)
+
+bpheno.preds[, pred.y.u := pred.y + 1.96*se.y]
+bpheno.preds[, pred.y.l := pred.y - 1.96*se.y]
+bpheno.preds[, pred.p := exp(pred.y)/(1 + exp(pred.y))]
+bpheno.preds[, pred.p.u := exp(pred.y.u)/(1 + exp(pred.y.u))]
+bpheno.preds[, pred.p.l := exp(pred.y.l)/(1 + exp(pred.y.l))]
+
+p_bpheno_inter = formatC(all.phenotypes[phenotype %in% bphenos & predictor == "Interaction", pvalue],2)
+bpheno.labs = c("70.2" = "Hepititis B", "401" = "Hypertension", "401.1" = "Essential hypertension", "580" = "Nephritis","580.11" = "Proliferative\n glomerulonephritis", "580.4" = "Renal sclerosis")
+
+plt_bpheno = ggplot(bpheno.preds)+
+  geom_line(aes(European, pred.p,
+                color = regional_haplo),
+            alpha = 0.5)+
+  geom_ribbon(aes(x = European, ymin = pred.p.l, ymax = pred.p.u, fill = regional_haplo), 
+              alpha = 0.1, color = NA)+
+  scale_color_manual(values = c( "#7570b3","#d95f02"), 
+                     labels = c("African", "European"))+
+    scale_fill_manual(values = c( "#7570b3","#d95f02"), 
+                     labels = c("African","European"), guide = "none")+
+  theme_classic()+
+  facet_wrap(~Phenotype, scales = "free", 
+             labeller = as_labeller(bpheno.labs))+
+  theme(legend.position = c(0.9, 0.2),
+        legend.background = element_blank())+
+  labs(x = "Prop. of European ancestry",
+       y = "Probability",
+       color = "MT haplogroup")
+
+
+plt_bpheno
+
+
+```
+
+
+```{r}
+
+ggsave(F("output/plots/plt_bphenos_mtnuc_08142022.png"), 
+       plt_bpheno,
+       height = 3, width = 7)
+
+ggsave(F("output/plots/plt_qphenos_mtnuc_08142022.png"), 
+       plt_qpheno,
+       height = 6, width = 7)
+
+```
+
+Let's check if the effect of (European) ancestry is larger in people carrying the African haplogroup than in people carrying the European haplogroup.
+
+```{r}
+
+phenotypes = unique(all.phenotypes$phenotype)
+split.betas = lapply(phenotypes, function(x){
+  b_afr = all.phenotypes[phenotype == x & predictor == "Nuclear\n ancestry", beta]
+  b_eur = all.phenotypes[phenotype == x & predictor == "Nuclear\n ancestry", beta] + all.phenotypes[phenotype == x & predictor == "Interaction", beta]
+  pgroup = unique(all.phenotypes[phenotype == x, group])
+  return(data.table(b_afr = b_afr, b_eur = b_eur, group = pgroup))
+})
+names(split.betas) = phenotypes
+split.betas = dplyr::bind_rows(split.betas, .id = "Phenotype")
+
+```
+
+European ancestry tends to have a reducing effect on disease risk. For how many phenotypes (non-labs) is this the case?
+
+```{r}
+
+binom.test(x = split.betas[b_eur < 0 & group != "Labs", .N], 
+           n = split.betas[group != "Labs", .N])
+
+```
+
+Overwhelmingly, European ancestry has a 'protective' effect. This is most likely due to socio-environmental reasons (e.g. access to healthcare, racism etc). 
+
+For these cases, is the effect larger in people carrying the European haplogroup? i.e. is the protective effect of European ancestry steeper in people carrying the European haplogroup? 
+
+```{r}
+
+binom.test(x = split.betas[b_eur < 0 & group != "Labs" & b_eur < b_afr, .N], 
+           n = split.betas[b_eur < 0 & group != "Labs", .N])
+
+```
+
+
+```{r}
+
+binom.test(x = split.betas[b_eur > 0 & group != "Labs" & b_eur < b_afr, .N], 
+           n = split.betas[b_eur > 0 & group != "Labs", .N])
+
+```
+
+In the majority of the cases, the effect of ancestry is steeper in people carrying the European haplogroup.
+
+
+
+```{r}
+
+phenotypes = c(qphenos, bphenos)
+split.betas = lapply(phenotypes, function(x){
+  b_afr = all.phenotypes[phenotype == x & predictor == "Nuclear\n ancestry", beta]
+  b_eur = all.phenotypes[phenotype == x & predictor == "Nuclear\n ancestry", beta] + all.phenotypes[phenotype == x & predictor == "Interaction", beta]
+  pgroup = unique(all.phenotypes[phenotype == x, group])
+  return(data.table(b_afr = b_afr, b_eur = b_eur, group = pgroup))
+})
+names(split.betas) = phenotypes
+split.betas = dplyr::bind_rows(split.betas, .id = "Phenotype")
+
+
+binom.test(x = split.betas[b_eur > 0 & group != "Labs" & b_eur < b_afr, .N], 
+           n = split.betas[b_eur > 0 & group != "Labs", .N])
+
+```
+
+
+What is the range of the effect size of ancestry? (for power calculations).
+
+```{r}
+
+all.ancestry = all.phenotypes[predictor == "Nuclear\n ancestry" & sig == "S2"]
+all.ancestry[, OR := exp(beta)]
+
+```
+
+
+
+

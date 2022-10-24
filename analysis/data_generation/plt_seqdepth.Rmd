@@ -1,0 +1,50 @@
+---
+title: "Plot depth distribution along mtDNA"
+author: "AAZaidi"
+date: "7/13/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+
+library(data.table)
+library(ggplot2)
+
+F = rprojroot::is_rstudio_project$make_fix_file()
+
+```
+
+```{r}
+
+dat = fread(F("data/phenotype/PMBB_mtdepth_byposition.txt"))
+
+mean.filtered = round(mean(dat[position < 2000 | position > 3500, mean.mt]), 2)
+mean.unfiltered = round(mean(dat$mean.mt), 2)
+
+plt_depth = ggplot(dat)+
+  geom_point(aes(position, mean.mt), size = 0.5)+
+  scale_y_log10()+
+    theme_classic()+
+  geom_vline(xintercept = 2000, color = "red", linetype = "dotted")+
+  geom_vline(xintercept = 3500, color = "red", linetype = "dotted")+
+  annotate(geom = "text", x = 1e4, y=10, label = "Mean depth (filtered) = 1.01", hjust = 0)+
+  annotate(geom = "text", x = 1e4, y=15, label = "Mean depth (unfiltered) = 2.83", hjust = 0)+
+  labs(x = "Position along mtDNA (rCRS)",
+       y = "Mean sequencing depth")
+
+plt_depth
+
+```
+
+```{r}
+
+ggsave(F("output/plots/plt_seqdepth.png"), plt_depth, height =4, width = 7)
+
+```
+
+

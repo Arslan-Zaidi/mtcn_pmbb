@@ -1,0 +1,191 @@
+---
+title: "Phewas comparison with Hagg"
+author: "AAZaidi"
+date: "2022-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(PheWAS)
+  library(ggrepel)
+  library(pbapply)
+})
+F = rprojroot::is_rstudio_project$make_fix_file()
+
+```
+
+```{r}
+
+"%ni%" <- Negate("%in%")
+
+# read mtcn
+mtcn = fread(F("data/phenotype/PMBB_mtCN_filtered_45k_10212022.txt"))
+rmtcn = fread(F("data/phenotype/PMBB_plink4mat_combined.blood_residuals_10212022.pheno"))
+
+mtcn = merge(mtcn, rmtcn, by = c("FID","IID"))
+
+phecodes = fread(F("data/phenotype/PMBB-Release-2020-2.2_phenotype_PheCode-matrix.txt"),
+  header = TRUE)
+cvd.traits = data.table(Phecode = setdiff(colnames(phecodes), "PMBB_ID"))
+cvd.traits = addPhecodeInfo(cvd.traits)
+cvd.traits = cvd.traits[group == "circulatory system"]
+
+phecodes = phecodes[, .SD, .SDcols = c("PMBB_ID",cvd.traits$Phecode)]
+
+covar = fread(F("data/phenotype/PMBB_plink4mat_EUR.blood_07152022.covar"))
+mtcn = merge(mtcn, covar, by = c("FID","IID"))
+
+# merge all files
+mtcn = merge(mtcn, phecodes, by.x = "IID", by.y = "PMBB_ID")
+
+
+pc.covars = paste("PC", seq(1, 20), sep = "")
+pc.form = paste(pc.covars, collapse = "+")
+
+```
+
+
+```{r}
+
+
+blood.cols = c("Basophil_median","Neutrophil_median","Eosinophil_median","Lymphocyte_median","Monocyte_median","PLATELET_median")
+
+mtcn[, Neutrophil_p := Neutrophil_median/WBC_median]
+mtcn[, Lymphocyte_p := Lymphocyte_median/WBC_median]
+covar.form1 = paste(c(pc.covars, "Sex","age_cent","age_cent2", "Neutrophil_p", "WBC_median", "Lymphocyte_p"), collapse = "+")
+
+covar.form2 = paste(c(pc.covars, "Sex","age_cent","age_cent2", "Neutrophil_p", "WBC_median", "Lymphocyte_p", "PLATELET_median"), collapse = "+")
+
+phecode.names = cvd.traits$Phecode
+var.cols = setdiff(colnames(mtcn), phecode.names)
+
+fcomp.models = function(x){
+  dat = mtcn[, .SD, .SDcols = c(x,var.cols)]
+  colnames(dat)[1] = "nvisits"
+
+  dat[nvisits >= 2, `:=`(phenotype, 1)]
+  dat[nvisits == 0, `:=`(phenotype, 0)]
+  
+  #1. Hagg model
+  form1 = paste("phenotype~log.mtcn +", covar.form1, sep = "")
+  l1 = glm(data = dat, form1, family = "binomial")
+  s1 = summary(l1)$coefficients
+  
+  #2. Hagg model with platelets
+  form2 = paste("phenotype~log.mtcn +", covar.form2, sep = "")
+  l2 = glm(data = dat, form2, family = "binomial")
+  s2 = summary(l2)$coefficients
+  
+  #2. rlrmtcn (our current model)
+  form3 = paste("phenotype~rlrmtcn + Sex + age_cent + age_cent2 +", 
+                paste(pc.covars, collapse="+"))
+  l3 = glm(data = dat, form3, family = "binomial")
+  s3 = summary(l3)$coefficients
+  
+  dat = data.table(model = c("l1","l2","l3"), 
+                   beta = c(s1[2,1], s2[2,1], s3[2,1]),
+                   pvalue = c(s1[2,4], s2[2,4], s3[2,4]),
+                   coverged = c(l1$converged, l2$converged, l3$converged))
+  
+  return(dat)
+}
+
+hagg.models = suppressWarnings(pblapply(cvd.traits$Phecode, fcomp.models))
+
+names(hagg.models) = cvd.traits$Phecode
+hagg.models = dplyr::bind_rows(hagg.models, .id = "Phenotype")
+hagg.models2 = hagg.models[coverged == TRUE]
+hagg.models2[,p.adjusted := p.adjust(pvalue, n = 1200, method = "BH")]
+hagg.models2[,sig := "NS"]
+hagg.models2[p.adjusted < 0.05, sig := "S1"]
+hagg.models2[p.adjusted < 0.005, sig := "S2"]
+hagg.models2[beta > 0, sign := "+"]
+hagg.models2[beta <0, sign := "-"]
+
+hagg.models2 = addPhecodeInfo(hagg.models2)
+```
+
+
+```{r}
+
+hagg.models2$sign = factor(hagg.models2$sign, levels = c("+", "-"))
+plt_hatt = ggplot(hagg.models2, aes(Phenotype, -log10(pvalue)))+
+  geom_point(aes(fill = sig, color = sig, shape = sign), 
+             size = 0.6)+
+  geom_text_repel(data = hagg.models2[sig == "S2"], 
+                  aes(Phenotype, y = -log10(pvalue), 
+                      label = description))+
+  facet_grid(model~.,
+             labeller = as_labeller(c("l1" = "Hägg et al.", 
+                                    "l2" = "Hägg et al. +\n platelets",
+                                    "l3" = "This study")))+
+  theme_classic()+
+  theme(axis.text.x = element_blank(),
+        strip.text.x = element_text(angle = 270),
+        axis.ticks.x = element_blank(),
+        strip.background=element_rect(fill=NA, size = 0.8),
+        panel.border = element_rect(size = 0.2, fill = NA, color = "grey", linetype = "dotted"))+
+    scale_fill_manual(values = c("#2b8cbe","#fec44f","#d95f02"),
+                     labels = c("FDR > 0.05", "FDR < 0.05","FDR < 0.005"))+
+  scale_color_manual(values = c("#2b8cbe","#fec44f","#d95f02"),
+                     labels = c("FDR > 0.05", "FDR < 0.05","FDR < 0.005"))+
+    scale_shape_manual(values = c(24,25), labels = c("Up","Down"))+
+  guides(fill = "none")+
+  coord_cartesian(clip = 'off')
+
+plt_hatt
+```
+
+```{r}
+hagg.models2[model == "l1" & sig == "S2"]
+hagg.models2[model == "l2" & sig == "S2"]
+hagg.models2[model == "l3" & sig == "S2"]
+```
+
+
+```{r}
+
+ggsave(F("output/plots/plt_haggvus_10212022.svg"), 
+       plt_hatt,
+       height = 4, width = 6)
+
+```
+
+
+Plot the effect of hypertension for illustration
+
+```{r}
+
+subdat = hagg.models2[Phenotype == "401.2"]
+subdat[, chi.v := qchisq(pvalue,df = 1, lower.tail = FALSE)]
+subdat = subdat[, se := abs(beta/sqrt(chi.v))]
+
+plt_forest = ggplot(subdat)+
+    geom_hline(yintercept = 0, color = "red", linetype = "dotted")+
+  geom_point(aes(model, beta))+
+  geom_errorbar(aes(x = model, 
+                    ymin =  beta - 1.96*se, 
+                    ymax = beta + 1.96*se), 
+                width = 0.1)+
+  theme_classic()+
+  coord_flip()+
+  scale_x_discrete(labels = rev(c("This study", "Hägg et al. + platelets", "Hägg et al.")))+
+  labs(y = "Effect size \n 
+       (Hypertensive heart and/or renal disease)",
+       x = "Model")
+
+plt_forest
+  
+
+
+```
+
+

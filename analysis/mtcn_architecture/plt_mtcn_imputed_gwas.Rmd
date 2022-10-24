@@ -1,0 +1,170 @@
+---
+title: "mtCN GWAS with imputed data"
+author: "AAZaidi"
+date: "3/14/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+
+
+library(data.table)
+library(ggplot2)
+library(scattermore)
+library(patchwork)
+
+F = rprojroot::is_rstudio_project$make_fix_file()
+
+```
+
+
+```{r}
+
+# info = fread(F("data/genotype/imputed/PMBB-Release-2020-2.0_genetic_imputed-r2_0.5_maf.01_chrall.snplist.snplist"), header = FALSE)
+# colnames(info) = "SNP"
+
+read.gwas = function(path){
+  
+  dat = fread(F(path))
+  colnames(dat) = c("CHROM","BP","SNP","REF","ALT","A1","TEST","CT","BETA","SE","TSTAT","P","ERR")
+  dat$TEST=NULL
+  dat = dat[ERR==".",]
+  dat$ERR = NULL
+  dat[, sig := -log10(P)]
+  #dat$CHROM = factor(dat$CHROM, levels = seq(1,22))
+
+  # dat = dat[SNP %in% info$SNP]
+  
+  return(dat)
+}
+
+```
+
+
+```{r}
+
+afr.bl = read.gwas("data/mtgwas/mtCN/imputed/AFR/residuals/pmbb_mtgwas_logmtcn.filtered.residuals.AFR.chrall.rlrmtcn.glm.linear.gz")
+
+afr.bl[, sig:=-log10(P)]
+afr.bl$CHROM = factor(afr.bl$CHROM, levels = seq(1,22,1))
+
+plt.afr.bl = ggplot(afr.bl, aes(BP, sig, color = CHROM))+
+  geom_scattermore(pointsize = 3)+
+  facet_grid(~CHROM, scales = "free_x")+
+  theme_classic()+
+  theme(axis.text.x = element_blank(),
+        panel.spacing = unit(0.01, "lines"),
+        legend.position = "none")+
+  labs(x = "Genomic position", y = bquote(-log[10]~"P value"))+  
+  scale_color_manual(values = rep(c("#fc8d62","#8da0cb"),11))+
+  geom_hline(yintercept = -log10(5e-08), linetype = "dashed", color = "black")
+
+plt.afr.bl
+
+
+```
+
+```{r}
+
+eur.bl = read.gwas("data/mtgwas/mtCN/imputed/EUR/residuals/pmbb_mtgwas_logmtcn.filtered.residuals.EUR.chrall.rlrmtcn.glm.linear.gz")
+
+eur.bl[, sig:=-log10(P)]
+eur.bl$CHROM = factor(eur.bl$CHROM, levels = seq(1,22,1))
+
+plt.eur.bl = ggplot(eur.bl, aes(BP, sig, color = CHROM))+
+  geom_scattermore(pointsize = 3)+
+  facet_grid(~CHROM, scales = "free_x")+
+  theme_classic()+
+  theme(axis.text.x = element_blank(),
+        panel.spacing = unit(0.01, "lines"),
+        legend.position = "none")+
+  labs(x = "Genomic position", y = bquote(-log[10]~"P value"))+  
+  scale_color_manual(values = rep(c("#fc8d62","#8da0cb"),11))+
+  geom_hline(yintercept = -log10(5e-08), linetype = "dashed", color = "black")
+
+plt.eur.bl
+
+```
+
+Plot both.
+
+```{r}
+
+plt_both = plt.afr.bl/plt.eur.bl
+
+ggsave(F("output/plots/plt_manhattan_mtcn_imputed_08242022.png"),
+       plt_both,
+       height = 6, width = 10)
+
+```
+
+
+
+```{r}
+
+afr.bl.chr1 = read.gwas("data/mtgwas/mtCN/imputed/AFR/residuals/pmbb_mtgwas_logmtcn.filtered.residuals.AFR.chr1.resid.log.mtcn.glm.linear")
+
+afr.nobl.chr1 = read.gwas("data/mtgwas/mtCN/imputed/AFR/pmbb_mtgwas_logmtcn.filtered.imputed.AFR.chr1.nobl.log.mtcn.glm.linear.gz")
+
+# afr.bl.darc.chr1 = read.gwas("data/mtgwas/mtCN/imputed/AFR/pmbb_mtgwas_logmtcn.filtered.imputed.AFR.chr1.bl.rs2814778.log.mtcn.glm.linear.gz")
+
+#afr.nobl.chr1 = afr.nobl[CHROM == 1]
+
+plt.afr.nobl.chr1 = ggplot(afr.nobl.chr1, aes(BP, sig))+
+  geom_point(color = "grey", alpha = 0.4)+
+  theme_classic()+
+  theme(panel.spacing = unit(0.01, "lines"),
+        legend.position = "none")+
+  labs(x = "Position on chromosome 1", y = bquote(-log[10]~"P value"),
+       title = bquote("Model: y ~ sex + age + age"^2~"+ gPCs1-20"))+
+  geom_hline(yintercept = -log10(5e-08), linetype = "dashed", color = "red")
+
+plt.afr.bl.chr1 = ggplot(afr.bl.chr1, aes(BP, sig))+
+  geom_point(color = "grey", alpha = 0.4)+
+  theme_classic()+
+  theme(panel.spacing = unit(0.01, "lines"),
+        legend.position = "none")+
+  labs(x = "Position on chromosome 1", y = bquote(-log[10]~"P value"),
+       title = bquote("Model: y ~ sex + age + age"^2~"+ gPCs1-20 + blood counts"))+
+  geom_hline(yintercept = -log10(5e-08), linetype = "dashed", color = "red")
+
+# plt.afr.bl.darc.chr1 = ggplot(afr.bl.darc.chr1, aes(BP, sig))+
+#   geom_point(color = "grey", alpha = 0.4)+
+#   theme_classic()+
+#   theme(panel.spacing = unit(0.01, "lines"),
+#         legend.position = "none")+
+#   labs(x = "Position on chromosome 1", y = bquote(-log[10]~"P value"),
+#        title = bquote("Model: y ~ sex + age + age"^2~"+ gPCs1-20 + blood counts + rs281778"))+
+#   geom_hline(yintercept = -log10(5e-08), linetype = "dashed", color = "red")
+
+plt.afr.nobl.chr1
+plt.afr.bl.chr1
+# plt.afr.bl.darc.chr1
+
+```
+
+
+```{r}
+
+# ggsave(F("output/plots/plt_mtcn_manhattan_chrom1.nobl.AFR.07192022.png"), 
+#        plt.afr.nobl.chr1,
+#        height = 4, width = 6)
+
+ggsave(F("output/plots/plt_mtcn_manhattan_chrom1.bl.resid.AFR.07192022.png"), 
+       plt.afr.bl.chr1,
+       height = 4, width = 6)
+
+# ggsave(F("output/plots/plt_mtcn_manhattan_chrom1.bldarc.AFR.07142022.png"), 
+#        plt.afr.bl.darc.chr1,
+#        height = 4, width = 6)
+
+```
+
+
+

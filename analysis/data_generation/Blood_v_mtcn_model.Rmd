@@ -1,0 +1,382 @@
+---
+title: "Analyzing mtCN and blood traits"
+author: "AAZaidi"
+date: '2022-07-18'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(data.table)
+library(ggplot2)
+library(patchwork)
+
+F = rprojroot::is_rstudio_project$make_fix_file()
+
+"%ni%"<-Negate("%in%")
+
+```
+
+```{r}
+
+mtcn = fread(F("data/phenotype/PMBB_mtCN_filtered_45k_10212022.txt"))
+nrow(mtcn)
+wbc = fread(F("data/phenotype/WBC_summary_data_with_platelets.csv"))
+demog = fread(F("data/phenotype/PMBB-Release-2020-2.2_phenotype_covariates.txt"))
+demog[is.na(Age_at_Enrollment) == FALSE, `:=`(Age, Age_at_Enrollment)]
+demog[is.na(Age_at_Enrollment) == TRUE, `:=`(Age, Age_first_sample)]
+demog = demog[Age > 0]
+demog = demog[, .(PMBB_ID, Age, Sex)]
+
+mtcn = merge(mtcn, demog, by.x = "IID", by.y = "PMBB_ID")
+mtcn = merge(mtcn, wbc, by.x = "IID", by.y = "PMBB_ID")
+
+nrow(mtcn)
+
+mtcn = na.omit(mtcn)
+nrow(mtcn)
+```
+
+Let's first center and scale all variables but save the means and standard deviations so we can rescale them for interpretability.
+
+```{r}
+
+blood.cols = colnames(mtcn)[grep("median", colnames(mtcn))]
+mmtcn = melt(mtcn[, .SD, .SDcols = c("IID", "mean.mtcn", "log.mtcn", "Age", "Sex", blood.cols)], 
+             id.vars = c("IID", "mean.mtcn", "log.mtcn","Sex"))
+
+mmtcn = mmtcn[, value_sd := scale(value), by = c("variable")]
+
+ggplot(mmtcn, aes(value_sd, mean.mtcn))+
+  geom_point(alpha = 0.3)+
+  facet_wrap(~variable, scales = "free")+
+  theme_classic()
+
+```
+Let's get rid of outliers. Let's remove blood counts that are > 7.5 SD from the mean. Let's also remove observations where the mtCN > 5 SD
+
+```{r}
+
+ggplot(mmtcn[ value_sd < 7.5 & mean.mtcn < 5], aes(value_sd, mean.mtcn))+
+  geom_point(alpha = 0.3)+
+  facet_wrap(~variable, scales = "free")+
+  theme_classic()
+
+
+```
+That looks reasonable. Remove these outliers, rescale the variables and save the means and standard deviations.
+
+Then, use the log of mean.mtcn as the phenotype.
+
+```{r}
+
+mmtcn = mmtcn[ value_sd < 7.5 & mean.mtcn < 5,]
+
+#rescale
+mmtcn = mmtcn[, value_sd := scale(value), by = "variable"]
+
+mmtcn.summary = mmtcn[, .(mean = mean(value), sd = sd(value)), by = "variable"]
+
+#dcast to wide format
+mtcn2 = dcast(mmtcn, IID +Sex + log.mtcn ~ variable, value.var = "value_sd")
+#omit NAs
+mtcn2 = na.omit(mtcn2)
+
+nrow(mtcn2)
+
+```
+
+Now, we model the effect of blood counts, age, and sex on log.mtcn in the combined sample, and separately in AFR and EUR.
+
+
+```{r}
+
+afr.ids = fread(F("data/genotype/PMBB_Release-2020-2.0-MT.AFR_unrelated_IDs.txt"), header = FALSE)
+eur.ids = fread(F("data/genotype/PMBB_Release-2020-2.0-MT.EUR_unrelated_IDs.txt"), header = FALSE)
+colnames(eur.ids) = colnames(afr.ids) = c("FID","IID")
+
+
+ancestry = fread(F("data/genotype/pmbb.afr.weighted.04222022.glanc"))
+
+mtcn2  = mtcn2[IID %in% afr.ids$IID | IID %in% eur.ids$IID]
+
+nrow(mtcn2)
+
+mtcn2 = merge(mtcn2, ancestry[, .(IID, African)], by = "IID", all.x = TRUE)
+mtcn2[is.na(African), African := 0]
+
+l.total = lm(data = mtcn2, formula = log.mtcn ~ Sex + Age+
+               Neutrophil_median + 
+               Basophil_median + 
+               PLATELET_median + 
+               Monocyte_median + 
+               Lymphocyte_median + 
+               Eosinophil_median)
+
+l.total.sum = data.table(predictor = c("Sex", "Age", "Neutrophil", "Basophil", "Platelet", "Monocyte", "Lymphocyte", "Eosinophil"),
+                       betas = summary(l.total)$coefficients[c(2:9), 1],
+                       ses = summary(l.total)$coefficients[c(2:9),2],
+                       pvalues = summary(l.total)$coefficients[c(2:9),4],
+                       pop = rep("Combined", 8))
+
+l.total.sum$predictor = factor(l.total.sum$predictor, levels = c("Sex","Age","Neutrophil", "Basophil", "Platelet", "Monocyte", "Lymphocyte", "Eosinophil"))
+
+
+fwcrit = qnorm(0.025, lower.tail = FALSE)
+
+#plot
+plt.l.total.sum = ggplot(l.total.sum, aes(predictor, betas))+
+  geom_hline(yintercept = 0, color = "black", linetype = "dashed")+
+  geom_point(position = position_dodge(width = 0.3))+
+  theme_classic()+
+  geom_errorbar(aes(predictor, ymax = betas + fwcrit*ses, ymin = betas - fwcrit*ses),
+                width = 0.2, position = position_dodge(width = 0.3))+
+  labs(x = "Predictors",y = "Effect on log(rmtCN)", color = "Cohort")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = c(0.2,0.5))+
+  coord_flip()+
+  scale_x_discrete(labels = c("Sex \n(Male)","Age","Neutrophil", "Basophil", "Platelet", "Monocyte", "Lymphocyte", "Eosinophil"))
+
+
+plt.l.total.sum
+
+
+
+```
+
+Now estimate the coefficients separately within each cohort.
+
+```{r}
+
+mmtcn.eur = mmtcn[IID %in% eur.ids$IID]
+mmtcn.afr = mmtcn[IID %in% afr.ids$IID]
+
+# covar.afr = fread(F("data/phenotype/PMBB_plink4mat_AFR.blood_07152022.covar"))
+# covar.eur = fread(F("data/phenotype/PMBB_plink4mat_EUR.blood_07152022.covar"))
+blood.cols = c("Neutrophil_median", "Basophil_median", "PLATELET_median", "Monocyte_median", "Lymphocyte_median", "Eosinophil_median")
+
+# mmtcn.afr = mmtcn[IID %in% covar.afr$IID]
+# mmtcn.eur = mmtcn[IID %in% covar.eur$IID]
+
+mmtcn.afr = mmtcn.afr[, value_sd := scale(value), by = "variable"]
+mmtcn.eur = mmtcn.eur[, value_sd := scale(value), by = "variable"]
+
+#dcast to wide format
+mtcn.afr2 = dcast(mmtcn.afr, IID +Sex + log.mtcn ~ variable, value.var = "value_sd")
+mtcn.afr2 = merge(mtcn.afr2, ancestry[, .(IID, African)], by = "IID")
+mtcn.afr2 = na.omit(mtcn.afr2)
+nrow(mtcn.afr2)
+
+#dcast to wide format
+mtcn.eur2 = dcast(mmtcn.eur, IID +Sex + log.mtcn ~ variable, value.var = "value_sd")
+mtcn.eur2 = na.omit(mtcn.eur2)
+nrow(mtcn.eur2)
+
+mtcn.eur2$Pop = "EUR"
+mtcn.afr2$Pop = "AFR"
+
+l.pop.sum = lapply(list(mtcn.eur2, mtcn.afr2), 
+                   function(x){
+                     pop = x$Pop[1]
+                     if(pop == "EUR"){
+                     
+                     l.total2 = lm(data = x, formula = log.mtcn ~ Sex + Age+
+                                    Neutrophil_median + 
+                                    Basophil_median + 
+                                    PLATELET_median + 
+                                    Monocyte_median + 
+                                    Lymphocyte_median + 
+                                    Eosinophil_median)
+                     
+                     l.total2.sum = data.table(predictor = c("Sex", "Age", "Neutrophil", "Basophil", "Platelet", "Monocyte", "Lymphocyte", "Eosinophil"),
+                                              betas = summary(l.total2)$coefficients[c(2:9), 1],
+                                              ses = summary(l.total2)$coefficients[c(2:9),2],
+                                              pvalues = summary(l.total2)$coefficients[c(2:9),4],
+                                              pop = rep(pop, 8))
+                     }
+                     if(pop == "AFR"){
+                             l.total2 = lm(data = x, formula = log.mtcn ~ Sex + Age+
+                                    Neutrophil_median + 
+                                    Basophil_median + 
+                                    PLATELET_median + 
+                                    Monocyte_median + 
+                                    Lymphocyte_median + 
+                                    Eosinophil_median)
+                     
+                     l.total2.sum = data.table(predictor = c("Sex", "Age", "Neutrophil", "Basophil", "Platelet", "Monocyte", "Lymphocyte", "Eosinophil"),
+                                              betas = summary(l.total2)$coefficients[c(2:9), 1],
+                                              ses = summary(l.total2)$coefficients[c(2:9),2],
+                                              pvalues = summary(l.total2)$coefficients[c(2:9),4],
+                                              pop = rep(pop, 8))
+                       
+                     }
+                     
+                     return(l.total2.sum)
+                   })
+
+l.pop.sum = dplyr::bind_rows(l.pop.sum)
+l.pop.sum = rbind(l.pop.sum, l.total.sum)
+l.pop.sum$pop = factor(l.pop.sum$pop, levels = c("AFR", "EUR", "Combined"))
+l.pop.sum$predictor = factor(l.pop.sum$predictor, 
+                             levels = c("Sex","Age","Neutrophil", "Basophil", "Platelet", "Monocyte", "Lymphocyte", "Eosinophil"))
+
+plt_l.sum = ggplot(l.pop.sum, aes(predictor, betas, color = pop))+
+  geom_hline(yintercept = 0, color = "black", linetype = "dashed")+
+  geom_point(position = position_dodge(width = 0.3))+
+  theme_classic()+
+  geom_errorbar(aes(predictor, ymax = betas + fwcrit*ses, ymin = betas - fwcrit*ses, color = pop),
+                width = 0.2, position = position_dodge(width = 0.3))+
+  scale_color_manual(values = c("#7570b3","#d95f02", "black"))+
+  labs(x = "Predictors",y = "Effect on log(rmtCN)", color = "Cohort")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=14),
+        axis.text.y = element_text(size = 14),
+        legend.position = c(0.2,0.7),
+        axis.title = element_text(size = 16)
+        )+
+  coord_flip()+
+  scale_x_discrete(labels = c("Sex \n(Male)","Age","Neutrophil", "Basophil", "Platelet", "Monocyte", "Lymphocyte", "Eosinophil"))
+
+plt_l.sum
+
+```
+
+```{r}
+
+ggsave(F("output/plots/Fig1/plt_blmtcn_linear_10212022.pdf"), 
+       plt_l.sum,
+       height = 7, width = 5)
+
+```
+
+Now, let's fit a more complex model in the combined sample to account for ancestry, interactions, and non-linear effects of blood counts.
+
+Ancestry = 0 if the cohort is EUR and proportion of African ancestry if cohort is AFR
+
+```{r}
+
+l.total = lm(data = mtcn2, formula = log.mtcn ~ (Sex + poly(Age, 2))*
+               (poly(Neutrophil_median, 2) + 
+               poly(Basophil_median,2) + 
+               poly(PLATELET_median, 2) + 
+               poly(Monocyte_median, 2) + 
+               poly(Lymphocyte_median, 2) + 
+               poly(Eosinophil_median, 2)))
+
+get_poly_orth_map <- function(x){
+  object = poly(mtcn2[[x]], 2)
+  stopifnot(inherits(object, "poly"))
+  sigs  <- attr(object, "coefs")$norm2
+  alpha <- attr(object, "coefs")$alpha
+  
+  nc <- length(alpha) + 1L
+  Gamma <- matrix(0., nc, nc)
+  Gamma[1, 1] <- 1
+  if(nc > 1){
+    Gamma[ , 2] <- -alpha[1] * Gamma[, 1]
+    Gamma[2, 2] <- 1
+  }
+  if(nc > 2)
+    for(i in 3:nc){
+      i_m1 <- i - 1L
+      Gamma[, i] <- c(0, Gamma[-nc, i_m1]) - alpha[i_m1] * Gamma[, i_m1] - 
+        sigs[i] / sigs[i_m1] * Gamma[, i - 2L]
+    }
+  
+  tmp <- sigs[-1]
+  tmp[1] <- 1
+  Gamma = Gamma / rep(sqrt(tmp), each = nc)
+  B = coefficients(l.total)
+  
+}
+
+
+coef(l.total)
+
+
+```
+
+
+
+Now output the residuals from the combined model. This will serve as our phenotype in downstream analyses.
+
+```{r}
+
+resid.total = cbind(mtcn2[, .(IID, IID)], residuals(l.total))
+colnames(resid.total) = c("FID","IID","rlrmtcn")
+
+fwrite(resid.total, F("data/phenotype/PMBB_plink4mat_combined.blood_residuals_10212022.pheno"), sep = "\t")
+
+```
+
+
+Now let's plot the effect of each predictor while residualizing on all other terms (in the combined sample) and no correction for PCs.
+
+
+```{r}
+
+
+facet.labs = data.table(labels = c("Age", "Sex", "Neutrophils", "Basophils", "Platelets", "Monocyte", "Lymphocytes","Eosinophils"), variable = c("Age", "Sex", blood.cols))
+
+all.cols = c("Sex","Age",blood.cols)
+predictions = lapply(all.cols, function(x){
+  if(x == "Sex"){
+    dat = mtcn2[, lapply(.SD, mean), .SDcols = setdiff(all.cols, x)]
+    dat = cbind(dat, data.table(Sex = c("Male","Female")))
+    pred = as.data.table(predict.lm(l.total, dat, se.fit = TRUE, interval = "confidence")$fit)
+    pred$Sex = c("Male","Female")
+    pred = merge(mtcn2, pred, by = "Sex")
+    xlabel = facet.labs[variable == x, labels]
+
+    plt = ggplot(pred)+
+      geom_point(aes(Sex, log.mtcn), color = "grey", alpha = 0.1,
+                 position = position_jitter(width = 0.1))+
+      geom_point(aes(Sex, fit), color = "blue")+
+      theme_classic()+
+      labs(x = xlabel, y = "Log (rmtCN)")+
+      theme(axis.title.y = element_blank())
+  }else{
+  dat = mtcn2[, lapply(.SD, mean), .SDcols = setdiff(all.cols, c(x,"Sex"))]
+  dat.f = cbind(dat, mtcn2[, .SD, .SDcols = x])
+  dat.m = dat.f
+  dat.f$Sex = "Female"
+  dat.m$Sex = "Male"
+  pred.f = as.data.table(predict.lm(l.total, dat.f, se.fit = TRUE, interval = "confidence")$fit)
+  pred.m = as.data.table(predict.lm(l.total, dat.m, se.fit = TRUE, interval = "confidence")$fit)
+  pred = (pred.f + pred.m)/2
+  pred = cbind(mtcn2[, .SD, .SDcols = c(x,"log.mtcn")], pred)
+  mu.x = as.numeric(mmtcn.summary[variable == x,2])
+  sd.x = as.numeric(mmtcn.summary[variable == x,3])
+  colnames(pred)[1] = "x"
+  pred[, x := x*sd.x + mu.x]
+  xlabel = facet.labs[variable == x, labels]
+
+  plt = ggplot(pred)+
+      geom_point(aes(x, log.mtcn), color = "grey", alpha = 0.1)+
+      geom_line(aes(x, fit), color = "blue")+
+      geom_ribbon(aes(x, ymin = lwr, ymax = upr), alpha = 0.4, fill = "blue")+
+      theme_classic()+
+      labs(x = xlabel, y = "Log (rmtCN)")+
+    theme(axis.title.y = element_blank())
+
+  }
+})
+
+plts.curves = wrap_plots(predictions, nrow = 2, ncol = 4)
+plts.curves
+
+
+```
+
+outplot to plot
+
+```{r}
+
+ggsave(F("output/plots/plt_bl_panels_combined_10212022.png"), plts.curves, 
+       height = 5, width = 8)
+
+```
+

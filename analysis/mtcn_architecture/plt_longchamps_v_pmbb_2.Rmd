@@ -1,0 +1,269 @@
+---
+title: "Replication of longchamps"
+author: "AAZaidi"
+date: "7/13/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(data.table)
+library(patchwork)
+library(deming)
+
+F = rprojroot::is_rstudio_project$make_fix_file()
+
+#function to convert allele frequency to maf
+fmaf = function(x){
+  if(x > 0.5){
+    return(1-x)
+  }
+  if(x <=0.5){
+    return(x)
+  }
+}
+
+```
+
+```{r}
+
+afr.fil = fread(F("data/mtgwas/mtCN/imputed/lchamps_rep/AFR/residuals/pmbb_lchamps_logmtcn.resid.imputed.AFR.chrall.rlrmtcn.glm.linear"))
+
+eur.fil = fread(F("data/mtgwas/mtCN/imputed/lchamps_rep/EUR/residuals/pmbb_lchamps_logmtcn.resid.imputed.EUR.chrall.rlrmtcn.glm.linear"))
+
+colnames(afr.fil) = colnames(eur.fil) = c("chrom","position","id","ref","alt","a1","test","nsamples","beta","se","tstat","pvalue","error")
+
+```
+
+
+
+```{r}
+
+lchamps = fread(F("data/prev_associations/mtukbassoc_mtCN_longchamps.txt"))
+colnames(lchamps)[c(9:11)] = c("IMPUT_SCORE","BETA","SE")
+lchamps[, MAF := sapply(lchamps$A1FREQ, fmaf)]
+
+lchamps.afr = merge(lchamps, afr.fil, by.x = "hg38_BP", by.y = "position")
+lchamps.eur = merge(lchamps, eur.fil, by.x = "hg38_BP", by.y = "position")
+
+lchamps.afr[ALLELE1 == a1, beta.adj := beta]
+lchamps.afr[ALLELE1 != a1, beta.adj := -beta]
+
+lchamps.eur[ALLELE1 == a1, beta.adj := beta]
+lchamps.eur[ALLELE1 != a1, beta.adj := -beta]
+
+
+#estimate regression slopes taking into account SE of x and y
+l1.eur = deming(data = lchamps.eur, beta.adj ~ BETA, xstd = SE, ystd = se)
+s1.eur = data.table(x = lchamps.eur$BETA, 
+                fit = lchamps.eur$BETA*l1.eur$coefficients[2], 
+                lwr = l1.eur$coefficients[1] + lchamps.eur$BETA*(l1.eur$coefficients[2] - 1.96*l1.eur$se[2]),
+                upr = l1.eur$coefficients[1] + lchamps.eur$BETA*(l1.eur$coefficients[2] + 1.96*l1.eur$se[2]))
+
+l1.afr = deming(data = lchamps.afr, beta.adj ~ BETA, xstd = SE, ystd = se)
+s1.afr = data.table(x = lchamps.afr$BETA, 
+                fit = lchamps.afr$BETA*l1.afr$coefficients[2], 
+                lwr = l1.afr$coefficients[1] + lchamps.afr$BETA*(l1.afr$coefficients[2] - 1.96*l1.afr$se[2]),
+                upr = l1.afr$coefficients[1] + lchamps.afr$BETA*(l1.afr$coefficients[2] + 1.96*l1.afr$se[2]))
+
+#estimate correlation coefficient
+r.eur = round(with(lchamps.eur, cor(BETA, beta.adj)), 2)
+r.afr = round(with(lchamps.afr, cor(BETA, beta.adj)), 2)
+
+plt_lchamps.eur = ggplot(lchamps.eur)+
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5)+
+      geom_line(data = s1.eur, aes(x = x, y = fit), color = "blue", alpha = 0.5)+
+  geom_ribbon(data = s1.eur, aes(x = x, ymin = lwr, ymax = upr), alpha = 0.1, fill = "blue")+
+    geom_errorbar(aes(x = BETA, ymin = beta.adj - 1.96*se, ymax = beta.adj +1.96*se), alpha = 0.3)+
+  geom_errorbarh(aes(x = BETA, y = beta.adj, xmin = BETA- 1.96*SE, xmax = BETA+1.96*SE), alpha = 0.3)+
+  geom_point(aes(BETA, beta.adj, color = MAF), size = 0.5)+
+  theme_classic()+
+    scale_color_gradient(low = "#fee8c8", high = "#e34a33")+
+  labs(x = "Effect size (Longchamps et al.)", 
+       y = "Effect size (PMBB - EUR)")+
+  geom_hline(yintercept = 0, color = "black", linetype = "dotted")+
+  annotate(geom = "text", x = 0, y = -0.3, label = bquote(rho~"="~.(r.eur)))
+
+
+plt_lchamps.afr = ggplot(lchamps.afr)+
+    geom_abline(intercept = 0, slope = 1, alpha = 0.5, linetype = "dashed")+
+    geom_line(data = s1.afr, aes(x = x, y = fit), color = "blue", alpha = 0.5)+
+  geom_ribbon(data = s1.afr, aes(x = x, ymin = lwr, ymax = upr), alpha = 0.1, fill = "blue")+
+    geom_errorbar(aes(x = BETA, ymin = beta.adj - 1.96*se, ymax = beta.adj +1.96*se), alpha = 0.3)+
+  geom_errorbarh(aes(x = BETA, y = beta.adj, xmin = BETA- 1.96*SE, xmax = BETA+1.96*SE), alpha = 0.3)+
+  geom_point(aes(BETA, beta.adj, color = MAF), size = 0.5)+
+  theme_classic()+
+    scale_color_gradient(low = "#fee8c8", high = "#e34a33")+
+  labs(x = "Effect size (Longchamps et al.)", 
+       y = "Effect size (PMBB - AFR)")+
+  geom_hline(yintercept = 0, color = "black", linetype = "dotted")+
+  annotate(geom = "text", x = 0, y = -0.3, label = bquote(rho~"="~.(r.afr)))
+
+
+plt_lchamps.eur
+plt_lchamps.afr
+
+```
+
+Which associations are significant at a 0.05/110 level?
+
+```{r}
+
+lchamps.afr[pvalue < 0.05/110]
+lchamps.eur[pvalue < 0.05/110]
+
+```
+
+
+
+```{r}
+
+pmbb = merge(lchamps.afr[, .(id, beta.adj, se)], lchamps.eur[, .(id, beta.adj, se)], by = "id", suffixes = c(".afr", ".eur"))
+
+l1.pmbb = deming(data = pmbb, beta.adj.afr ~ beta.adj.eur, xstd = se.eur, ystd = se.afr)
+s1.pmbb = data.table(x = pmbb$beta.adj.eur, 
+                fit = pmbb$beta.adj.eur*l1.pmbb$coefficients[2], 
+                lwr = l1.pmbb$coefficients[1] + pmbb$beta.adj.eur*(l1.pmbb$coefficients[2] - 1.96*l1.pmbb$se.afr[2]),
+                upr = l1.pmbb$coefficients[1] + pmbb$beta.adj.eur*(l1.pmbb$coefficients[2] + 1.96*l1.pmbb$se.afr[2]))
+
+#estimate correlation coefficient
+r.pmbb = round(with(pmbb, cor(beta.adj.eur, beta.adj.afr)), 2)
+
+plt_pmbb = ggplot(pmbb)+
+    geom_abline(intercept = 0, slope = 1, color = "red")+
+      geom_line(data = s1.pmbb, aes(x = x, y = fit), color = "blue")+
+  geom_ribbon(data = s1.pmbb, aes(x = x, ymin = lwr, ymax = upr), alpha = 0.1, fill = "blue")+
+  geom_point(aes(beta.adj.eur, beta.adj.afr), alpha = 0.6, size = 0.5)+
+  geom_errorbar(aes(x = beta.adj.eur, ymin = beta.adj.afr - 1.96*se.afr, ymax = beta.adj.afr +1.96*se.afr), alpha = 0.3)+
+  geom_errorbarh(aes(x = beta.adj.eur, y = beta.adj.afr, xmin = beta.adj.eur- 1.96*se.eur, xmax = beta.adj.eur+1.96*se.eur), alpha = 0.3)+
+  theme_classic()+
+  labs(x = "Effect size (PMBB - EUR)", 
+       y = "Effect size (PMBB - AFR)")+
+  geom_hline(yintercept = 0, color = "black", linetype = "dotted")+
+    annotate(geom = "text", x = 0.0, y = -0.3, label = bquote(rho~"="~.(r.pmbb)))
+
+plt_pmbb
+
+```
+
+What is the proportion of the variance explained by the variants in each? To calculate this, we need the frequency of the variants in th EUR and AFR cohorts.
+
+```{r}
+
+afr.freq = fread(F("data/genotype/imputed/lchamps_pmbb_freq/lchamps_AFR.afreq"))
+eur.freq = fread(F("data/genotype/imputed/lchamps_pmbb_freq/lchamps_EUR.afreq"))
+
+colnames(afr.freq) = colnames(eur.freq) = c("chrom","snp","a1","a2","a1freq","count")
+afr.freq[, maf := sapply(a1freq, fmaf)]
+eur.freq[, maf := sapply(a1freq, fmaf)]
+
+freq = merge(afr.freq[, .(snp, a1, a2, maf)], eur.freq[, .(snp, a1, a2, maf)], 
+             by = c("snp","a1","a2"), suffixes = c(".afr", ".eur"))
+
+
+pmbb = merge(pmbb, freq[, .(snp, maf.afr, maf.eur)], by.x = "id", by.y = "snp")
+
+plt_pmbb = ggplot(pmbb)+
+    geom_abline(intercept = 0, slope = 1, color = "red", alpha = 0.5)+
+      geom_line(data = s1.pmbb, aes(x = x, y = fit), color = "blue")+
+  geom_ribbon(data = s1.pmbb, aes(x = x, ymin = lwr, ymax = upr), alpha = 0.1, fill = "blue")+
+  geom_errorbar(aes(x = beta.adj.eur, ymin = beta.adj.afr - 1.96*se.afr, ymax = beta.adj.afr +1.96*se.afr), alpha = 0.3)+
+  geom_errorbarh(aes(x = beta.adj.eur, y = beta.adj.afr, xmin = beta.adj.eur- 1.96*se.eur, xmax = beta.adj.eur+1.96*se.eur), alpha = 0.3)+
+    geom_point(aes(beta.adj.eur, beta.adj.afr, 
+                   color = beta.adj.afr^2 *2* maf.afr *(1-maf.afr) - beta.adj.eur^2 *2*maf.eur*(1-maf.eur)), 
+               size = 0.5)+
+  theme_classic()+
+  labs(x = "Effect size (PMBB - EUR)", 
+       y = "Effect size (PMBB - AFR)",
+       color = bquote("h"[AFR]^2~"-"~"h"[EUR]^2))+
+  geom_hline(yintercept = 0, color = "black", linetype = "dotted")+
+  scale_color_gradient2(low = "#4575b4",mid = "#ffffbf", high = "#d73027")+
+    annotate(geom = "text", x = 0, y = -0.3, label = bquote(rho~"="~.(r.pmbb)))
+
+plt_pmbb
+
+```
+
+```{r}
+
+pmbb[, h2.afr := 2*beta.adj.afr^2 *maf.afr*(1-maf.afr)]
+pmbb[, h2.eur := 2*beta.adj.eur^2 *maf.eur*(1-maf.eur)]
+
+with(pmbb, sum(h2.afr))
+with(pmbb, sum(h2.eur))
+
+
+```
+
+These are very similar to each other. 
+
+Let's check if the effect sizes in the AFR cohort are more similar to the effects reported in the African ancestry cohort of longhcmaps et al.
+
+```{r}
+#not to be confused with lchamps.afr
+afr.lchamps = fread(F("data/prev_associations/lchamps/GCST90026374_buildGRCh37.tsv.gz"))
+afr.lchamps = merge(afr.lchamps, lchamps.afr[, .(SNP,a1, beta, se)], by.x = "variant_id", by.y = "SNP")
+afr.lchamps[effect_allele == a1, beta.y.adj := beta.y]
+afr.lchamps[effect_allele != a1, beta.y.adj := -1*beta.y]
+
+ggplot(afr.lchamps, aes(beta.x, beta.y.adj))+
+  geom_point()+
+  theme_classic()+
+  geom_abline(intercept = 0, slope = 1, color = "red")+
+  stat_smooth(method = "lm")+
+  labs(x = "Effect size (Chong - AFR)", 
+       y = "Effect size (PMBB - AFR)")
+
+```
+
+```{r}
+plt.range = c(min(pmbb$beta.adj.afr - 2*pmbb$se.afr), max(pmbb$beta.adj.afr + 2*pmbb$se.afr))
+
+plt_combined = (plt_lchamps.eur + ylim(plt.range) + theme(plot.title = element_blank())) + (plt_lchamps.afr + ylim(plt.range)+ theme(plot.title = element_blank())) + (plt_pmbb + ylim(plt.range)+ theme(plot.title = element_blank())) 
+
+plt_combined
+
+```
+
+```{r}
+
+ggsave(F("output/plots/Fig3/plt_lchamps_pmbb.pdf"), plt_combined, 
+       height = 3, width = 8, device = cairo_pdf())
+
+```
+
+
+What is the power to discover each variant at the replication threshold. 
+
+```{r}
+
+pwr.afr = merge(lchamps.afr[, .(id, ALLELE1, ALLELE0, BETA, beta.adj)], pmbb[, .(id, maf.afr)], by = "id")
+pwr.eur = merge(lchamps.eur[, .(id, ALLELE1, ALLELE0, BETA, beta.adj)], pmbb[, .(id, maf.eur)], by = "id")
+pwr.afr$cohort = "AFR"
+pwr.eur$cohort = "EUR"
+colnames(pwr.afr)[6] = colnames(pwr.eur)[6] = "maf"
+pwr.afr[, se.pwr := 0.8/sqrt(2*9e3*maf*(1-maf)) ]
+pwr.eur[, se.pwr := 0.8/sqrt(2*23e3*maf*(1-maf)) ]
+pwr = rbind(pwr.afr, pwr.eur)
+pwr[, ncp := (BETA/se.pwr)^2]
+
+rep.p = 0.05/110
+chi.critical.rep = qchisq(rep.p, df = 1, ncp = 0, lower.tail = FALSE)
+
+pwr[, pwr := pchisq(chi.critical.rep, df =1, ncp = ncp, lower.tail = FALSE)]
+
+
+```
+
+```{r}
+
+colnames(pwr) = c("ID","Effect.allele","Alt.allele","Lchamps.beta","PMBB.beta","PMBB.maf","Cohort","PMBB.se","NCP","Power")
+fwrite(pwr, F("output/tables/supp_table_lchamps_pwr_08302022.txt"),
+       sep = "\t")
+
+```
+
