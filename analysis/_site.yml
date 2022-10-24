@@ -1,7 +1,7 @@
-name: "mtcn_pmbb"
+name: mtcn_pmbb
 output_dir: ../docs
 navbar:
-  title: "mtcn_pmbb"
+  title: mtcn_pmbb
   left:
   - text: Home
     href: index.html
@@ -9,6 +9,10 @@ navbar:
     href: about.html
   - text: License
     href: license.html
+  right:
+  - icon: fab fa-github
+    text: Source code
+    href: https://github.com/Arslan-Zaidi/mtcn_pmbb
 output:
   workflowr::wflow_html:
     toc: yes
